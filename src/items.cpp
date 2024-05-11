@@ -1,6 +1,6 @@
-﻿/**
+/**
  * The Forgotten Server - a free and open-source MMORPG server emulator
- * Copyright (C) 2019 Mark Samman <mark.samman@gmail.com>
+ * Copyright (C) 2016  Mark Samman <mark.samman@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -31,8 +31,8 @@ extern Weapons* g_weapons;
 
 Items::Items()
 {
-	items.reserve(40000);
-	nameToItems.reserve(40000);
+	items.reserve(30000);
+	nameToItems.reserve(30000);
 }
 
 void Items::clear()
@@ -40,45 +40,6 @@ void Items::clear()
 	items.clear();
 	reverseItemMap.clear();
 	nameToItems.clear();
-}
-
-using LootTypeNames = std::unordered_map<std::string, ItemTypes_t>;
-
-LootTypeNames lootTypeNames = {
-	{"armor",		ITEM_TYPE_ARMOR},
-	{"amulet",		ITEM_TYPE_AMULET},
-	{"legs",		ITEM_TYPE_BOOTS},
-	{"container",	ITEM_TYPE_CONTAINER},
-	{"decoration",	ITEM_TYPE_DECORATION},
-	{"food",		ITEM_TYPE_FOOD},
-	{"head",		ITEM_TYPE_HELMET},
-	{"legs",		ITEM_TYPE_LEGS},
-	{"other",		ITEM_TYPE_OTHER},
-	{"potion",		ITEM_TYPE_POTION},
-	{"ring",		ITEM_TYPE_RING},
-	{"rune",		ITEM_TYPE_RUNE},
-	{"shield",		ITEM_TYPE_SHIELD},
-	{"tools",		ITEM_TYPE_TOOLS},
-	{"valuables",	ITEM_TYPE_VALUABLE},
-	{"ammo",		ITEM_TYPE_AMMO},
-	{"axe",			ITEM_TYPE_AXE},
-	{"club",		ITEM_TYPE_CLUB},
-	{"distance",	ITEM_TYPE_DISTANCE},
-	{"sword",		ITEM_TYPE_SWORD},
-	{"wand",		ITEM_TYPE_WAND},
-	{"product",		ITEM_TYPE_CREATUREPRODUCT},
-	{"retrieve",	ITEM_TYPE_RETRIEVE},
-	{"gold",		ITEM_TYPE_GOLD},
-	{"unassigned",	ITEM_TYPE_UNASSIGNED},
-};
-
-ItemTypes_t Items::getLootType(const std::string& strValue)
-{
-	auto lootType = lootTypeNames.find(strValue);
-	if (lootType != lootTypeNames.end()) {
-		return lootType->second;
-	}
-	return ITEM_TYPE_NONE;
 }
 
 bool Items::reload()
@@ -96,16 +57,18 @@ bool Items::reload()
 	return true;
 }
 
-constexpr auto OTBI = OTB::Identifier{{'O','T', 'B', 'I'}};
-
 FILELOADER_ERRORS Items::loadFromOtb(const std::string& file)
 {
-	OTB::Loader loader{file, OTBI};
+	FileLoader f;
+	if (!f.openFile(file.c_str(), "OTBI")) {
+		return f.getError();
+	}
 
-	auto& root = loader.parseTree();
+	uint32_t type;
+	NODE node = f.getChildNode(NO_NODE, type);
 
 	PropStream props;
-	if (loader.getProps(root, props)) {
+	if (f.getProps(node, props)) {
 		//4 byte flags
 		//attributes
 		//0x01 = version data
@@ -145,15 +108,16 @@ FILELOADER_ERRORS Items::loadFromOtb(const std::string& file)
 	} else if (majorVersion != 3) {
 		std::cout << "Old version detected, a newer version of items.otb is required." << std::endl;
 		return ERROR_INVALID_FORMAT;
-	} else if (minorVersion < CLIENT_VERSION_1140) {
+	} else if (minorVersion < CLIENT_VERSION_1098) {
 		std::cout << "A newer version of items.otb is required." << std::endl;
 		return ERROR_INVALID_FORMAT;
 	}
 
-	for (auto & itemNode : root.children) {
+	node = f.getChildNode(node, type);
+	while (node != NO_NODE) {
 		PropStream stream;
-		if (!loader.getProps(itemNode, stream)) {
-			return ERROR_INVALID_FORMAT;
+		if (!f.getProps(node, stream)) {
+			return f.getError();
 		}
 
 		uint32_t flags;
@@ -186,8 +150,8 @@ FILELOADER_ERRORS Items::loadFromOtb(const std::string& file)
 						return ERROR_INVALID_FORMAT;
 					}
 
-					if (serverId > 40000 && serverId < 40100) {
-						serverId -= 40000;
+					if (serverId > 30000 && serverId < 30100) {
+						serverId -= 30000;
 					}
 					break;
 				}
@@ -269,8 +233,8 @@ FILELOADER_ERRORS Items::loadFromOtb(const std::string& file)
 		}
 		ItemType& iType = items[serverId];
 
-		iType.group = static_cast<itemgroup_t>(itemNode.type);
-		switch (itemNode.type) {
+		iType.group = static_cast<itemgroup_t>(type);
+		switch (type) {
 			case ITEM_GROUP_CONTAINER:
 				iType.type = ITEM_TYPE_CONTAINER;
 				break;
@@ -304,7 +268,6 @@ FILELOADER_ERRORS Items::loadFromOtb(const std::string& file)
 		iType.useable = hasBitSet(FLAG_USEABLE, flags);
 		iType.pickupable = hasBitSet(FLAG_PICKUPABLE, flags);
 		iType.moveable = hasBitSet(FLAG_MOVEABLE, flags);
-		iType.wrapContainer = hasBitSet(FLAG_WRAPCONTAINER, flags);
 		iType.stackable = hasBitSet(FLAG_STACKABLE, flags);
 
 		iType.alwaysOnTop = hasBitSet(FLAG_ALWAYSONTOP, flags);
@@ -326,50 +289,13 @@ FILELOADER_ERRORS Items::loadFromOtb(const std::string& file)
 		iType.lightColor = lightColor;
 		iType.wareId = wareId;
 		iType.alwaysOnTopOrder = alwaysOnTopOrder;
+
+		node = f.getNextNode(node, type);
 	}
 
 	items.shrink_to_fit();
 	return ERROR_NONE;
 }
-
-// bool Items::loadFromProtobuf(const std::string& file)
-// {
-// 	std::fstream input(file, std::ios::in | std::ios::binary);
-// 	if (!appearances.ParseFromIstream(&input)) {
-// 		std::cerr << "Failed to parse appearances.dat." << std::endl;
-// 		return false;
-// 	}
-
-// 	for (int i = 0; i < appearances.object_size(); i++) {
-// 		const tibia::protobuf::appearances::Appearance& appearance = appearances.object(i);
-// 		uint16_t id = appearance.id();
-// 		if (appearance.flags().has_cumulative()) {
-// 			appearancesMap[id].cumulative = true;
-// 		}
-// 		if (appearance.flags().has_liquidcontainer()) {
-// 			appearancesMap[id].liquidcontainer = true;
-// 		}
-
-// 		if (appearance.flags().has_liquidpool()) {
-// 			appearancesMap[id].liquidpool = true;
-// 		}
-
-// 		if (appearance.flags().has_container()) {
-// 			appearancesMap[id].isContainer = true;
-// 		}
-
-// 		if (appearance.frame_group(0).sprite_info().has_animation()) {
-// 			appearancesMap[id].isAnimation = true;
-// 		}
-
-// 		if (appearance.flags().has_corpse()) {
-// 			appearancesMap[id].isCorpse = true;
-// 		}
-// 	}
-// 	std::cout << "appearancesMap size " << appearancesMap.size() << std::endl;
-
-// 	return true;
-// }
 
 bool Items::loadFromXml()
 {
@@ -389,7 +315,7 @@ bool Items::loadFromXml()
 
 		pugi::xml_attribute fromIdAttribute = itemNode.attribute("fromid");
 		if (!fromIdAttribute) {
-			std::cout << "[Warning - Items::loadFromXml] No item id found: " << itemNode.attribute("name").as_string() << std::endl;
+			std::cout << "[Warning - Items::loadFromXml] No item id found" << std::endl;
 			continue;
 		}
 
@@ -405,37 +331,13 @@ bool Items::loadFromXml()
 			parseItemNode(itemNode, id++);
 		}
 	}
-
-	buildInventoryList();
 	return true;
-}
-
-void Items::buildInventoryList()
-{
-	inventory.reserve(items.size());
-	for (const auto& type: items) {
-		if (type.weaponType != WEAPON_NONE || type.ammoType != AMMO_NONE ||
-			type.attack != 0 || type.defense != 0 ||
-			type.extraDefense != 0 || type.armor != 0 ||
-			type.slotPosition & SLOTP_NECKLACE ||
-			type.slotPosition & SLOTP_RING ||
-			type.slotPosition & SLOTP_AMMO ||
-			type.slotPosition & SLOTP_FEET ||
-			type.slotPosition & SLOTP_HEAD ||
-			type.slotPosition & SLOTP_ARMOR ||
-			type.slotPosition & SLOTP_LEGS)
-		{
-			inventory.push_back(type.clientId);
-		}
-	}
-	inventory.shrink_to_fit();
-	std::sort(inventory.begin(), inventory.end());
 }
 
 void Items::parseItemNode(const pugi::xml_node& itemNode, uint16_t id)
 {
-	if (id > 40000 && id < 40100) {
-		id -= 40000;
+	if (id > 30000 && id < 30100) {
+		id -= 30000;
 
 		if (id >= items.size()) {
 			items.resize(id + 1);
@@ -475,8 +377,6 @@ void Items::parseItemNode(const pugi::xml_node& itemNode, uint16_t id)
 		}
 
 		std::string tmpStrValue = asLowerCaseString(keyAttribute.as_string());
-
-		// Put here because have many conditions (C1601 - compiler limit: blocks nested too deeply)
 		if (tmpStrValue == "type") {
 			tmpStrValue = asLowerCaseString(valueAttribute.as_string());
 			if (tmpStrValue == "key") {
@@ -488,10 +388,6 @@ void Items::parseItemNode(const pugi::xml_node& itemNode, uint16_t id)
 				it.type = ITEM_TYPE_CONTAINER;
 			} else if (tmpStrValue == "depot") {
 				it.type = ITEM_TYPE_DEPOT;
-			} else if (tmpStrValue == "rewardchest") {
-				it.type = ITEM_TYPE_REWARDCHEST;
-			} else if (tmpStrValue == "carpet") {
-				it.type = ITEM_TYPE_CARPET;
 			} else if (tmpStrValue == "mailbox") {
 				it.type = ITEM_TYPE_MAILBOX;
 			} else if (tmpStrValue == "trashholder") {
@@ -504,14 +400,6 @@ void Items::parseItemNode(const pugi::xml_node& itemNode, uint16_t id)
 				it.type = ITEM_TYPE_BED;
 			} else if (tmpStrValue == "rune") {
 				it.type = ITEM_TYPE_RUNE;
-			} else if (tmpStrValue == "creatureproduct") {
-				it.type = ITEM_TYPE_CREATUREPRODUCT;
-			} else if (tmpStrValue == "food") {
-				it.type = ITEM_TYPE_FOOD;
-			} else if (tmpStrValue == "valuable") {
-				it.type = ITEM_TYPE_VALUABLE;
-			} else if (tmpStrValue == "potion") {
-				it.type = ITEM_TYPE_POTION;
 			} else {
 				std::cout << "[Warning - Items::parseItemNode] Unknown type: " << valueAttribute.as_string() << std::endl;
 			}
@@ -531,13 +419,6 @@ void Items::parseItemNode(const pugi::xml_node& itemNode, uint16_t id)
 			it.extraDefense = pugi::cast<int32_t>(valueAttribute.value());
 		} else if (tmpStrValue == "attack") {
 			it.attack = pugi::cast<int32_t>(valueAttribute.value());
-		} else if (tmpStrValue == "wrapcontainer") {
-			it.wrapContainer = valueAttribute.as_bool();
-		} else if (tmpStrValue == "imbuingslots") {
-			it.imbuingSlots = pugi::cast<int32_t>(valueAttribute.value());
-		} else if (tmpStrValue == "wrapableto" || tmpStrValue == "unwrapableto") {
-			it.wrapableTo = pugi::cast<int32_t>(valueAttribute.value());
-			it.wrapable = true;
 		} else if (tmpStrValue == "rotateto") {
 			it.rotateTo = pugi::cast<int32_t>(valueAttribute.value());
 		} else if (tmpStrValue == "moveable" || tmpStrValue == "movable") {
@@ -565,7 +446,7 @@ void Items::parseItemNode(const pugi::xml_node& itemNode, uint16_t id)
 			} else {
 				std::cout << "[Warning - Items::parseItemNode] Unknown floorChange: " << valueAttribute.as_string() << std::endl;
 			}
-		} else if (tmpStrValue == "corpsetype") {
+		} else if (tmpStrValue == "corpsetype") { //pota
 			tmpStrValue = asLowerCaseString(valueAttribute.as_string());
 			if (tmpStrValue == "venom") {
 				it.corpseType = RACE_VENOM;
@@ -577,6 +458,40 @@ void Items::parseItemNode(const pugi::xml_node& itemNode, uint16_t id)
 				it.corpseType = RACE_FIRE;
 			} else if (tmpStrValue == "energy") {
 				it.corpseType = RACE_ENERGY;
+			} else if (tmpStrValue == "grass") {
+				it.corpseType = RACE_GRASS;
+			} else if (tmpStrValue == "normal") {
+				it.corpseType = RACE_NORMAL;
+			} else if (tmpStrValue == "water") {
+				it.corpseType = RACE_WATER;
+			} else if (tmpStrValue == "flying") {
+				it.corpseType = RACE_FLYING;
+			} else if (tmpStrValue == "poison") {
+				it.corpseType = RACE_POISON;
+			} else if (tmpStrValue == "electric") {
+				it.corpseType = RACE_ELECTRIC;
+			} else if (tmpStrValue == "ground") {
+				it.corpseType = RACE_GROUND;
+			} else if (tmpStrValue == "psychic") {
+				it.corpseType = RACE_PSYCHIC;
+			} else if (tmpStrValue == "rock") {
+				it.corpseType = RACE_ROCK;
+			} else if (tmpStrValue == "ice") {
+				it.corpseType = RACE_ICE;
+			} else if (tmpStrValue == "bug") {
+				it.corpseType = RACE_BUG;
+			} else if (tmpStrValue == "dragon") {
+				it.corpseType = RACE_DRAGON;
+			} else if (tmpStrValue == "ghost") {
+				it.corpseType = RACE_GHOST;
+			} else if (tmpStrValue == "dark") {
+				it.corpseType = RACE_DARK;
+			} else if (tmpStrValue == "steel") {
+				it.corpseType = RACE_STEEL;
+			} else if (tmpStrValue == "fairy") {
+				it.corpseType = RACE_FAIRY;
+			} else if (tmpStrValue == "fighting") {
+				it.corpseType = RACE_FIGHTING;
 			} else {
 				std::cout << "[Warning - Items::parseItemNode] Unknown corpseType: " << valueAttribute.as_string() << std::endl;
 			}
@@ -638,22 +553,16 @@ void Items::parseItemNode(const pugi::xml_node& itemNode, uint16_t id)
 			tmpStrValue = asLowerCaseString(valueAttribute.as_string());
 			if (tmpStrValue == "sword") {
 				it.weaponType = WEAPON_SWORD;
-				it.type = ITEM_TYPE_SWORD;
 			} else if (tmpStrValue == "club") {
 				it.weaponType = WEAPON_CLUB;
-				it.type = ITEM_TYPE_CLUB;
 			} else if (tmpStrValue == "axe") {
 				it.weaponType = WEAPON_AXE;
-				it.type = ITEM_TYPE_AXE;
 			} else if (tmpStrValue == "shield") {
 				it.weaponType = WEAPON_SHIELD;
-				it.type = ITEM_TYPE_SHIELD;
 			} else if (tmpStrValue == "distance") {
 				it.weaponType = WEAPON_DISTANCE;
-				it.type = ITEM_TYPE_DISTANCE;
 			} else if (tmpStrValue == "wand") {
 				it.weaponType = WEAPON_WAND;
-				it.type = ITEM_TYPE_WAND;
 			} else if (tmpStrValue == "ammunition") {
 				it.weaponType = WEAPON_AMMO;
 			} else {
@@ -663,19 +572,14 @@ void Items::parseItemNode(const pugi::xml_node& itemNode, uint16_t id)
 			tmpStrValue = asLowerCaseString(valueAttribute.as_string());
 			if (tmpStrValue == "head") {
 				it.slotPosition |= SLOTP_HEAD;
-				it.type = ITEM_TYPE_HELMET;
 			} else if (tmpStrValue == "body") {
 				it.slotPosition |= SLOTP_ARMOR;
-				it.type = ITEM_TYPE_ARMOR;
 			} else if (tmpStrValue == "legs") {
 				it.slotPosition |= SLOTP_LEGS;
-				it.type = ITEM_TYPE_LEGS;
 			} else if (tmpStrValue == "feet") {
 				it.slotPosition |= SLOTP_FEET;
-				it.type = ITEM_TYPE_BOOTS;
 			} else if (tmpStrValue == "backpack") {
 				it.slotPosition |= SLOTP_BACKPACK;
-				it.type = ITEM_TYPE_CONTAINER;
 			} else if (tmpStrValue == "two-handed") {
 				it.slotPosition |= SLOTP_TWO_HAND;
 			} else if (tmpStrValue == "right-hand") {
@@ -684,39 +588,38 @@ void Items::parseItemNode(const pugi::xml_node& itemNode, uint16_t id)
 				it.slotPosition &= ~SLOTP_RIGHT;
 			} else if (tmpStrValue == "necklace") {
 				it.slotPosition |= SLOTP_NECKLACE;
-				it.type = ITEM_TYPE_AMULET;
 			} else if (tmpStrValue == "ring") {
 				it.slotPosition |= SLOTP_RING;
-				it.type = ITEM_TYPE_RING;
 			} else if (tmpStrValue == "ammo") {
 				it.slotPosition |= SLOTP_AMMO;
-				it.type = ITEM_TYPE_AMMO;
 			} else if (tmpStrValue == "hand") {
 				it.slotPosition |= SLOTP_HAND;
+			} else if (tmpStrValue == "order") { //pota
+				it.slotPosition |= SLOTP_ORDER;
+			} else if (tmpStrValue == "info") { //pota
+				it.slotPosition |= SLOTP_INFO;
 			} else {
 				std::cout << "[Warning - Items::parseItemNode] Unknown slotType: " << valueAttribute.as_string() << std::endl;
 			}
 		} else if (tmpStrValue == "ammotype") {
-			it.ammoType = getAmmoType(asLowerCaseString(valueAttribute.as_string()));
+			it.ammoType = getAmmoType(valueAttribute.as_string());
 			if (it.ammoType == AMMO_NONE) {
 				std::cout << "[Warning - Items::parseItemNode] Unknown ammoType: " << valueAttribute.as_string() << std::endl;
 			}
 		} else if (tmpStrValue == "shoottype") {
-			ShootType_t shoot = getShootType(asLowerCaseString(valueAttribute.as_string()));
+			ShootType_t shoot = getShootType(valueAttribute.as_string());
 			if (shoot != CONST_ANI_NONE) {
 				it.shootType = shoot;
 			} else {
 				std::cout << "[Warning - Items::parseItemNode] Unknown shootType: " << valueAttribute.as_string() << std::endl;
 			}
 		} else if (tmpStrValue == "effect") {
-			MagicEffectClasses effect = getMagicEffect(asLowerCaseString(valueAttribute.as_string()));
+			MagicEffectClasses effect = getMagicEffect(valueAttribute.as_string());
 			if (effect != CONST_ME_NONE) {
 				it.magicEffect = effect;
 			} else {
 				std::cout << "[Warning - Items::parseItemNode] Unknown effect: " << valueAttribute.as_string() << std::endl;
 			}
-		} else if (tmpStrValue == "loottype") {
-			it.type = getLootType(valueAttribute.as_string());
 		} else if (tmpStrValue == "range") {
 			it.shootRange = pugi::cast<uint16_t>(valueAttribute.value());
 		} else if (tmpStrValue == "stopduration") {
@@ -777,18 +680,6 @@ void Items::parseItemNode(const pugi::xml_node& itemNode, uint16_t id)
 			it.getAbilities().skills[SKILL_SHIELD] = pugi::cast<int32_t>(valueAttribute.value());
 		} else if (tmpStrValue == "skillfist") {
 			it.getAbilities().skills[SKILL_FIST] = pugi::cast<int32_t>(valueAttribute.value());
-		} else if (tmpStrValue == "skillcriticalchance") {
-			it.getAbilities().skills[SKILL_CRITICAL_HIT_CHANCE] = pugi::cast<int32_t>(valueAttribute.value());
-		} else if (tmpStrValue == "skillcriticaldamage") {
-			it.getAbilities().skills[SKILL_CRITICAL_HIT_DAMAGE] = pugi::cast<int32_t>(valueAttribute.value());
-		} else if (tmpStrValue == "skilllifechance") {
-			it.getAbilities().skills[SKILL_LIFE_LEECH_CHANCE] = pugi::cast<int32_t>(valueAttribute.value());
-		} else if (tmpStrValue == "skilllifeamount") {
-			it.getAbilities().skills[SKILL_LIFE_LEECH_AMOUNT] = pugi::cast<int32_t>(valueAttribute.value());
-		} else if (tmpStrValue == "skillmanachance") {
-			it.getAbilities().skills[SKILL_MANA_LEECH_CHANCE] = pugi::cast<int32_t>(valueAttribute.value());
-		} else if (tmpStrValue == "skillmanaamount") {
-			it.getAbilities().skills[SKILL_MANA_LEECH_AMOUNT] = pugi::cast<int32_t>(valueAttribute.value());
 		} else if (tmpStrValue == "maxhitpoints") {
 			it.getAbilities().stats[STAT_MAXHITPOINTS] = pugi::cast<int32_t>(valueAttribute.value());
 		} else if (tmpStrValue == "maxhitpointspercent") {
@@ -851,6 +742,8 @@ void Items::parseItemNode(const pugi::xml_node& itemNode, uint16_t id)
 			it.getAbilities().absorbPercent[combatTypeToIndex(COMBAT_PHYSICALDAMAGE)] += pugi::cast<int16_t>(valueAttribute.value());
 		} else if (tmpStrValue == "absorbpercenthealing") {
 			it.getAbilities().absorbPercent[combatTypeToIndex(COMBAT_HEALING)] += pugi::cast<int16_t>(valueAttribute.value());
+		} else if (tmpStrValue == "absorbpercentundefined") {
+			it.getAbilities().absorbPercent[combatTypeToIndex(COMBAT_UNDEFINEDDAMAGE)] += pugi::cast<int16_t>(valueAttribute.value());
 		} else if (tmpStrValue == "suppressdrunk") {
 			if (valueAttribute.as_bool()) {
 				it.getAbilities().conditionSuppressions |= CONDITION_DRUNK;
@@ -1012,14 +905,6 @@ void Items::parseItemNode(const pugi::xml_node& itemNode, uint16_t id)
 			Abilities& abilities = it.getAbilities();
 			abilities.elementDamage = pugi::cast<uint16_t>(valueAttribute.value());
 			abilities.elementType = COMBAT_ENERGYDAMAGE;
-		} else if (tmpStrValue == "elementdeath") {
-			Abilities& abilities = it.getAbilities();
-			abilities.elementDamage = pugi::cast<uint16_t>(valueAttribute.value());
-			abilities.elementType = COMBAT_DEATHDAMAGE;
-		} else if (tmpStrValue == "elementholy") {
-			Abilities& abilities = it.getAbilities();
-			abilities.elementDamage = pugi::cast<uint16_t>(valueAttribute.value());
-			abilities.elementType = COMBAT_HOLYDAMAGE;
 		} else if (tmpStrValue == "walkstack") {
 			it.walkStack = valueAttribute.as_bool();
 		} else if (tmpStrValue == "blocking") {

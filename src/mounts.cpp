@@ -1,6 +1,6 @@
 /**
  * The Forgotten Server - a free and open-source MMORPG server emulator
- * Copyright (C) 2019 Mark Samman <mark.samman@gmail.com>
+ * Copyright (C) 2016  Mark Samman <mark.samman@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -45,8 +45,7 @@ bool Mounts::loadFromXml()
 			pugi::cast<uint16_t>(mountNode.attribute("clientid").value()),
 			mountNode.attribute("name").as_string(),
 			pugi::cast<int32_t>(mountNode.attribute("speed").value()),
-			mountNode.attribute("premium").as_bool(),
-			mountNode.attribute("vip").as_bool(false)
+			mountNode.attribute("premium").as_bool()
 		);
 	}
 	mounts.shrink_to_fit();
@@ -60,17 +59,6 @@ Mount* Mounts::getMountByID(uint8_t id)
 	});
 
 	return it != mounts.end() ? &*it : nullptr;
-}
-
-Mount* Mounts::getMountByName(const std::string& name) {
-	auto mountName = name.c_str();
-	for (auto& it : mounts) {
-		if (strcasecmp(mountName, it.name.c_str()) == 0) {
-			return &it;
-		}
-	}
-
-	return nullptr;
 }
 
 Mount* Mounts::getMountByClientID(uint16_t clientId)

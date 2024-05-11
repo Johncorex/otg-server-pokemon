@@ -1,6 +1,6 @@
 /**
  * The Forgotten Server - a free and open-source MMORPG server emulator
- * Copyright (C) 2019 Mark Samman <mark.samman@gmail.com>
+ * Copyright (C) 2016  Mark Samman <mark.samman@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -23,12 +23,7 @@
 #include "cylinder.h"
 #include "thing.h"
 #include "items.h"
-#include "luascript.h"
-#include "tools.h"
-#include <typeinfo>
 
-#include <boost/variant.hpp>
-#include <boost/lexical_cast.hpp>
 #include <deque>
 
 class Creature;
@@ -103,15 +98,6 @@ enum AttrTypes_t {
 	ATTR_HITCHANCE = 32,
 	ATTR_SHOOTRANGE = 33,
 	ATTR_SPECIAL = 34,
-	ATTR_IMBUINGSLOTS = 35, // removido (causa crash)
-
-	ATTR_CUSTOM_ATTRIBUTES = 36,
-
-	ATTR_QUICKLOOTCONTAINER = 37,
-	ATTR_OPENED = 38,
-	ATTR_DECAYTO = 39,
-	ATTR_IMBUED = 40,
-	ATTR_WRAPID = 41,
 };
 
 enum Attr_ReadValue {
@@ -119,8 +105,6 @@ enum Attr_ReadValue {
 	ATTR_READ_ERROR,
 	ATTR_READ_END,
 };
-
-#define IMBUEMENT_SLOT 500
 
 class ItemAttributes
 {
@@ -171,10 +155,7 @@ class ItemAttributes
 			return static_cast<uint16_t>(getIntAttr(ITEM_ATTRIBUTE_ACTIONID));
 		}
 
-		void setUniqueId(uint16_t n, bool force = false) {
-			if (force) {
-				// algo?
-			}
+		void setUniqueId(uint16_t n) {
 			setIntAttr(ITEM_ATTRIBUTE_UNIQUEID, n);
 		}
 		uint16_t getUniqueId() const {
@@ -226,152 +207,22 @@ class ItemAttributes
 			return static_cast<ItemDecayState_t>(getIntAttr(ITEM_ATTRIBUTE_DECAYSTATE));
 		}
 
-		struct CustomAttribute
-		{
-			typedef boost::variant<boost::blank, std::string, int64_t, double, bool> VariantAttribute;
-			VariantAttribute value;
-
-			CustomAttribute() : value(boost::blank()) {}
-
-			template<typename T>
-			explicit CustomAttribute(const T& v) : value(v) {}
-
-			template<typename T>
-			void set(const T& v) {
-				value = v;
-			}
-
-			template<typename T>
-			const T& get();
-
-			struct PushLuaVisitor : public boost::static_visitor<> {
-				lua_State* L;
-
-				explicit PushLuaVisitor(lua_State* L) : boost::static_visitor<>(), L(L) {}
-
-				void operator()(const boost::blank&) const {
-					lua_pushnil(L);
-				}
-
-				void operator()(const std::string& v) const {
-					LuaScriptInterface::pushString(L, v);
-				}
-
-				void operator()(bool v) const {
-					LuaScriptInterface::pushBoolean(L, v);
-				}
-
-				void operator()(const int64_t& v) const {
-					lua_pushnumber(L, v);
-				}
-
-				void operator()(const double& v) const {
-					lua_pushnumber(L, v);
-				}
-			};
-
-			void pushToLua(lua_State* L) const {
-				boost::apply_visitor(PushLuaVisitor(L), value);
-			}
-
-			struct SerializeVisitor : public boost::static_visitor<> {
-				PropWriteStream& propWriteStream;
-
-				explicit SerializeVisitor(PropWriteStream& propWriteStream) : boost::static_visitor<>(), propWriteStream(propWriteStream) {}
-
-				void operator()(const boost::blank&) const {
-				}
-
-				void operator()(const std::string& v) const {
-					propWriteStream.writeString(v);
-				}
-
-				template<typename T>
-				void operator()(const T& v) const {
-					propWriteStream.write<T>(v);
-				}
-			};
-
-			void serialize(PropWriteStream& propWriteStream) const {
-				propWriteStream.write<uint8_t>(static_cast<uint8_t>(value.which()));
-				boost::apply_visitor(SerializeVisitor(propWriteStream), value);
-			}
-
-			bool unserialize(PropStream& propStream) {
-				// This is hard coded so it's not general, depends on the position of the variants.
-				uint8_t pos;
-				if (!propStream.read<uint8_t>(pos)) {
-					return false;
-				}
-
-				switch (pos) {
-					case 1:  { // std::string
-						std::string tmp;
-						if (!propStream.readString(tmp)) {
-							return false;
-						}
-						value = tmp;
-						break;
-					}
-
-					case 2: { // int64_t
-						int64_t tmp;
-						if (!propStream.read<int64_t>(tmp)) {
-							return false;
-						}
-						value = tmp;
-						break;
-					}
-
-					case 3: { // double
-						double tmp;
-						if (!propStream.read<double>(tmp)) {
-							return false;
-						}
-						value = tmp;
-						break;
-					}
-
-					case 4: { // bool
-						bool tmp;
-						if (!propStream.read<bool>(tmp)) {
-							return false;
-						}
-						value = tmp;
-						break;
-					}
-
-					default: {
-						value = boost::blank();
-						return false;
-					}
-				}
-				return true;
-			}
-		};
-
 	protected:
-		bool hasAttribute(itemAttrTypes type) const {
+		inline bool hasAttribute(itemAttrTypes type) const {
 			return (type & attributeBits) != 0;
 		}
 		void removeAttribute(itemAttrTypes type);
 
 		static std::string emptyString;
-		static int64_t emptyInt;
-		static double emptyDouble;
-		static bool emptyBool;
-		typedef std::unordered_map<std::string, CustomAttribute> CustomAttributeMap;
 
 		struct Attribute
 		{
 			union {
 				int64_t integer;
 				std::string* string;
-				CustomAttributeMap* custom;
 			} value;
 			itemAttrTypes type;
 
-			//non-copyable
 			explicit Attribute(itemAttrTypes type) : type(type) {
 				memset(&value, 0, sizeof(value));
 			}
@@ -381,8 +232,6 @@ class ItemAttributes
 					value.integer = i.value.integer;
 				} else if (ItemAttributes::isStrAttrType(type)) {
 					value.string = new std::string(*i.value.string);
-				} else if (ItemAttributes::isCustomAttrType(type)) {
-					value.custom = new CustomAttributeMap(*i.value.custom);
 				} else {
 					memset(&value, 0, sizeof(value));
 				}
@@ -394,8 +243,6 @@ class ItemAttributes
 			~Attribute() {
 				if (ItemAttributes::isStrAttrType(type)) {
 					delete value.string;
-				} else if (ItemAttributes::isCustomAttrType(type)) {
-					delete value.custom;
 				}
 			}
 			Attribute& operator=(Attribute other) {
@@ -406,8 +253,6 @@ class ItemAttributes
 				if (this != &other) {
 					if (ItemAttributes::isStrAttrType(type)) {
 						delete value.string;
-					} else if (ItemAttributes::isCustomAttrType(type)) {
-						delete value.custom;
 					}
 
 					value = other.value;
@@ -438,95 +283,12 @@ class ItemAttributes
 		const Attribute* getExistingAttr(itemAttrTypes type) const;
 		Attribute& getAttr(itemAttrTypes type);
 
-		CustomAttributeMap* getCustomAttributeMap() {
-			if (!hasAttribute(ITEM_ATTRIBUTE_CUSTOM)) {
-				return nullptr;
-			}
-
-			return getAttr(ITEM_ATTRIBUTE_CUSTOM).value.custom;
-		}
-
-		template<typename R>
-		void setCustomAttribute(int64_t key, R value) {
-			std::string tmp = boost::lexical_cast<std::string>(key);
-			setCustomAttribute(tmp, value);
-		}
-
-		void setCustomAttribute(int64_t key, CustomAttribute& value) {
-			std::string tmp = boost::lexical_cast<std::string>(key);
-			setCustomAttribute(tmp, value);
-		}
-
-		template<typename R>
-		void setCustomAttribute(std::string& key, R value) {
-			toLowerCaseString(key);
-			if (hasAttribute(ITEM_ATTRIBUTE_CUSTOM)) {
-				removeCustomAttribute(key);
-			} else {
-				getAttr(ITEM_ATTRIBUTE_CUSTOM).value.custom = new CustomAttributeMap();
-			}
-			getAttr(ITEM_ATTRIBUTE_CUSTOM).value.custom->emplace(key, value);
-		}
-
-		void setCustomAttribute(std::string& key, CustomAttribute& value) {
-			toLowerCaseString(key);
-			if (hasAttribute(ITEM_ATTRIBUTE_CUSTOM)) {
-				removeCustomAttribute(key);
-			} else {
-				getAttr(ITEM_ATTRIBUTE_CUSTOM).value.custom = new CustomAttributeMap();
-			}
-			getAttr(ITEM_ATTRIBUTE_CUSTOM).value.custom->insert(std::make_pair(std::move(key), std::move(value)));
-		}
-
-		const CustomAttribute* getCustomAttribute(int64_t key) {
-			std::string tmp = boost::lexical_cast<std::string>(key);
-			return getCustomAttribute(tmp);
-		}
-
-		const CustomAttribute* getCustomAttribute(const std::string& key) {
-			if (const CustomAttributeMap* customAttrMap = getCustomAttributeMap()) {
-				auto it = customAttrMap->find(asLowerCaseString(key));
-				if (it != customAttrMap->end()) {
-					return &(it->second);
-				}
-			}
-			return nullptr;
-		}
-
-		bool removeCustomAttribute(int64_t key) {
-			std::string tmp = boost::lexical_cast<std::string>(key);
-			return removeCustomAttribute(tmp);
-		}
-
-		bool removeCustomAttribute(const std::string& key) {
-			if (CustomAttributeMap* customAttrMap = getCustomAttributeMap()) {
-				auto it = customAttrMap->find(asLowerCaseString(key));
-				if (it != customAttrMap->end()) {
-					customAttrMap->erase(it);
-					return true;
-				}
-			}
-			return false;
-		}
-
-		const static uint32_t intAttributeTypes = ITEM_ATTRIBUTE_ACTIONID | ITEM_ATTRIBUTE_UNIQUEID | ITEM_ATTRIBUTE_DATE
-			| ITEM_ATTRIBUTE_WEIGHT | ITEM_ATTRIBUTE_ATTACK | ITEM_ATTRIBUTE_DEFENSE | ITEM_ATTRIBUTE_EXTRADEFENSE
-			| ITEM_ATTRIBUTE_ARMOR | ITEM_ATTRIBUTE_HITCHANCE | ITEM_ATTRIBUTE_SHOOTRANGE | ITEM_ATTRIBUTE_OWNER
-			| ITEM_ATTRIBUTE_DURATION | ITEM_ATTRIBUTE_DECAYSTATE | ITEM_ATTRIBUTE_CORPSEOWNER | ITEM_ATTRIBUTE_CHARGES
-			| ITEM_ATTRIBUTE_FLUIDTYPE | ITEM_ATTRIBUTE_DOORID | ITEM_ATTRIBUTE_DECAYTO | ITEM_ATTRIBUTE_IMBUINGSLOTS
-			| ITEM_ATTRIBUTE_OPENED | ITEM_ATTRIBUTE_QUICKLOOTCONTAINER | ITEM_ATTRIBUTE_IMBUED | ITEM_ATTRIBUTE_WRAPID;
-		const static uint32_t stringAttributeTypes = ITEM_ATTRIBUTE_DESCRIPTION | ITEM_ATTRIBUTE_TEXT | ITEM_ATTRIBUTE_WRITER
-			| ITEM_ATTRIBUTE_NAME | ITEM_ATTRIBUTE_ARTICLE | ITEM_ATTRIBUTE_PLURALNAME | ITEM_ATTRIBUTE_SPECIAL;
-
 	public:
-		static bool isIntAttrType(itemAttrTypes type) {
-			return (type & intAttributeTypes) == type;
+		inline static bool isIntAttrType(itemAttrTypes type) {
+			return (type & 0x7FFE13) != 0;
 		}
-		static bool isStrAttrType(itemAttrTypes type) {
-			return (type & stringAttributeTypes) == type;
-		}
-		inline static bool isCustomAttrType(itemAttrTypes type) {
-			return (type & ITEM_ATTRIBUTE_CUSTOM) == type;
+		inline static bool isStrAttrType(itemAttrTypes type) {
+			return (type & 0x8001EC) != 0;
 		}
 
 		const std::forward_list<Attribute>& getList() const {
@@ -635,31 +397,6 @@ class Item : virtual public Thing
 			return attributes->hasAttribute(type);
 		}
 
-		template<typename R>
-		void setCustomAttribute(std::string& key, R value) {
-			getAttributes()->setCustomAttribute(key, value);
-		}
-
-		void setCustomAttribute(std::string& key, ItemAttributes::CustomAttribute& value) {
-			getAttributes()->setCustomAttribute(key, value);
-		}
-
-		const ItemAttributes::CustomAttribute* getCustomAttribute(int64_t key) {
-			return getAttributes()->getCustomAttribute(key);
-		}
-
-		const ItemAttributes::CustomAttribute* getCustomAttribute(const std::string& key) {
-			return getAttributes()->getCustomAttribute(key);
-		}
-
-		bool removeCustomAttribute(int64_t key) {
-			return getAttributes()->removeCustomAttribute(key);
-		}
-
-		bool removeCustomAttribute(const std::string& key) {
-			return getAttributes()->removeCustomAttribute(key);
-		}
-
 		void setSpecialDescription(const std::string& desc) {
 			setStrAttr(ITEM_ATTRIBUTE_DESCRIPTION, desc);
 		}
@@ -758,13 +495,6 @@ class Item : virtual public Thing
 			return getIntAttr(ITEM_ATTRIBUTE_CORPSEOWNER);
 		}
 
-		void setRewardCorpse() {
-			setCorpseOwner(static_cast<uint32_t>(std::numeric_limits<int32_t>::max()));
-		}
-		bool isRewardCorpse() {
-			return getCorpseOwner() == static_cast<uint32_t>(std::numeric_limits<int32_t>::max());
-		}
-
 		void setDuration(int32_t time) {
 			setIntAttr(ITEM_ATTRIBUTE_DURATION, time);
 		}
@@ -788,16 +518,6 @@ class Item : virtual public Thing
 			return static_cast<ItemDecayState_t>(getIntAttr(ITEM_ATTRIBUTE_DECAYSTATE));
 		}
 
-		void setDecayTo(int32_t decayTo) {
-			setIntAttr(ITEM_ATTRIBUTE_DECAYTO, decayTo);
-		}
-		int32_t getDecayTo() const {
-			if (hasAttribute(ITEM_ATTRIBUTE_DECAYTO)) {
-				return getIntAttr(ITEM_ATTRIBUTE_DECAYTO);
-			}
-			return items[id].decayTo;
-		}
-
 		static std::string getDescription(const ItemType& it, int32_t lookDistance, const Item* item = nullptr, int32_t subType = -1, bool addArticle = true);
 		static std::string getNameDescription(const ItemType& it, const Item* item = nullptr, int32_t subType = -1, bool addArticle = true);
 		static std::string getWeightDescription(const ItemType& it, uint32_t weight, uint32_t count = 1);
@@ -809,7 +529,7 @@ class Item : virtual public Thing
 		//serialization
 		virtual Attr_ReadValue readAttr(AttrTypes_t attr, PropStream& propStream);
 		bool unserializeAttr(PropStream& propStream);
-		virtual bool unserializeItemNode(OTB::Loader&, const OTB::Node&, PropStream& propStream);
+		virtual bool unserializeItemNode(FileLoader& f, NODE node, PropStream& propStream);
 
 		virtual void serializeAttr(PropWriteStream& propWriteStream) const;
 
@@ -839,7 +559,7 @@ class Item : virtual public Thing
 		}
 		uint8_t getShootRange() const {
 			if (hasAttribute(ITEM_ATTRIBUTE_SHOOTRANGE)) {
-				return static_cast<uint8_t>(getIntAttr(ITEM_ATTRIBUTE_SHOOTRANGE));
+				return getIntAttr(ITEM_ATTRIBUTE_SHOOTRANGE);
 			}
 			return items[id].shootRange;
 		}
@@ -869,33 +589,24 @@ class Item : virtual public Thing
 			}
 			return items[id].defense;
 		}
-		uint32_t getQuicklootAttr() const {
-			if (hasAttribute(ITEM_ATTRIBUTE_QUICKLOOTCONTAINER)) {
-				return static_cast<uint32_t>(getIntAttr(ITEM_ATTRIBUTE_QUICKLOOTCONTAINER));
-			}
-			return 0;
-		}
 		int32_t getExtraDefense() const {
 			if (hasAttribute(ITEM_ATTRIBUTE_EXTRADEFENSE)) {
 				return getIntAttr(ITEM_ATTRIBUTE_EXTRADEFENSE);
 			}
 			return items[id].extraDefense;
 		}
-		int32_t getImbuingSlots() const {
-			return items[id].imbuingSlots;
-		}
 		int32_t getSlotPosition() const {
 			return items[id].slotPosition;
 		}
 		int8_t getHitChance() const {
 			if (hasAttribute(ITEM_ATTRIBUTE_HITCHANCE)) {
-				return static_cast<uint8_t>(getIntAttr(ITEM_ATTRIBUTE_HITCHANCE));
+				return getIntAttr(ITEM_ATTRIBUTE_HITCHANCE);
 			}
 			return items[id].hitChance;
 		}
 
 		uint32_t getWorth() const;
-		LightInfo getLightInfo() const;
+		void getLight(LightInfo& lightInfo) const;
 
 		bool hasProperty(ITEMPROPERTY prop) const;
 		bool isBlocking() const {
@@ -913,9 +624,6 @@ class Item : virtual public Thing
 		bool isMagicField() const {
 			return items[id].isMagicField();
 		}
-		bool isWrapContainer() const {
-			return items[id].wrapContainer;
-		}
 		bool isMoveable() const {
 			return items[id].moveable;
 		}
@@ -931,10 +639,6 @@ class Item : virtual public Thing
 		bool isRotatable() const {
 			const ItemType& it = items[id];
 			return it.rotatable && it.rotateTo;
-		}
-		bool isWrapable() const {
-			const ItemType& it = items[id];
-			return it.wrapable && it.wrapableTo;
 		}
 		bool hasWalkStack() const {
 			return items[id].walkStack;
@@ -967,19 +671,13 @@ class Item : virtual public Thing
 			count = n;
 		}
 
-		static uint32_t countByType(const Item* i, int32_t subType) {
-			if (subType == -1 || subType == i->getSubType()) {
-				return i->getItemCount();
-			}
-
-			return 0;
-		}
+		static uint32_t countByType(const Item* i, int32_t subType);
 
 		void setDefaultSubtype();
 		uint16_t getSubType() const;
 		void setSubType(uint16_t n);
 
-		void setUniqueId(uint16_t n, bool force = false);
+		void setUniqueId(uint16_t n);
 
 		void setDefaultDuration() {
 			uint32_t duration = getDefaultDuration();
@@ -1031,19 +729,16 @@ class Item : virtual public Thing
 		Cylinder* getParent() const {
 			return parent;
 		}
-		void setParent(Cylinder* cylinder) override {
+		void setParent(Cylinder* cylinder) {
 			parent = cylinder;
 		}
 		Cylinder* getTopParent();
 		const Cylinder* getTopParent() const;
 		Tile* getTile();
 		const Tile* getTile() const;
-		bool isRemoved() const override {
+		bool isRemoved() const {
 			return !parent || parent->isRemoved();
 		}
-
-		uint32_t getImbuement(uint8_t slot);
-		void setImbuement(uint8_t slot, int64_t info);
 
 	protected:
 		std::string getWeightDescription(uint32_t weight) const;
@@ -1061,7 +756,16 @@ class Item : virtual public Thing
 		//Don't add variables here, use the ItemAttribute class.
 };
 
-using ItemList = std::list<Item*>;
-using ItemDeque = std::deque<Item*>;
+typedef std::list<Item*> ItemList;
+typedef std::deque<Item*> ItemDeque;
+
+inline uint32_t Item::countByType(const Item* i, int32_t subType)
+{
+	if (subType == -1 || subType == i->getSubType()) {
+		return i->getItemCount();
+	}
+
+	return 0;
+}
 
 #endif

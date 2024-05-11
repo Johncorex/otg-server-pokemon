@@ -1,6 +1,6 @@
 /**
  * The Forgotten Server - a free and open-source MMORPG server emulator
- * Copyright (C) 2019 Mark Samman <mark.samman@gmail.com>
+ * Copyright (C) 2016  Mark Samman <mark.samman@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -25,7 +25,6 @@
 #include "cylinder.h"
 #include "item.h"
 #include "tools.h"
-// #include "spectators.h"
 
 class Creature;
 class Teleport;
@@ -35,94 +34,9 @@ class MagicField;
 class QTreeLeafNode;
 class BedItem;
 
-class FastSpectatorVector {
-	public:
-		FastSpectatorVector() {
-			creatures = new Creature*[capacity];
-		}
-
-		~FastSpectatorVector() {
-			delete[] creatures;
-		}
-
-		FastSpectatorVector(const FastSpectatorVector&) = delete;
-		FastSpectatorVector& operator=(FastSpectatorVector const&) = delete;
-
-		void push_back(Creature* creature) {
-			if (count == capacity) {
-				Creature** creatouresNew = new Creature*[capacity * 4];
-				for (uint32_t i = 0; i < capacity; ++i) {
-					creatouresNew[i] = creatures[i];
-				}
-
-				delete[] creatures;
-				capacity *= 4;
-				creatures = creatouresNew;
-			}
-
-			creatures[count++] = creature;
-		}
-
-		void insert(Creature* creature) {
-			push_back(creature);
-		}
-
-		void clear() {
-			count = 0;
-		}
-
-		Creature* const* begin() const {
-			return &creatures[0];
-		}
-
-		Creature* const* end() const {
-			return &creatures[count];
-		}
-
-		Creature** begin() {
-			return &creatures[0];
-		}
-
-		Creature** end() {
-			return &creatures[count];
-		}
-
-		uint32_t size() const {
-			return count;
-		}
-
-		bool empty() const {
-			return count == 0;
-		}
-
-		void erase(Creature* creature) {
-			for (uint16_t i = 0; i < count; ++i) {
-				if (creatures[i] == creature) {
-					if (i != count - 1) {
-						std::swap(creatures[i], creatures[count - 1]);
-					}
-
-					count -= 1;
-					break;
-				}
-			}
-		}
-
-		void unique() {
-			std::sort(begin(), end());
-			Creature** last_unique = std::unique(begin(), end());
-			count = ((size_t)last_unique - (size_t)creatures) / (size_t)sizeof(Creature*);
-		}
-
-	private:
-		Creature** creatures;
-		uint32_t count = 0, capacity = 32;
-};
-
-using CreatureVector = std::vector<Creature*>;
-using ItemVector = std::vector<Item*>;
-using SpectatorVec = FastSpectatorVector;
-using SpectatorHashSet = SpectatorVec;
+typedef std::vector<Creature*> CreatureVector;
+typedef std::vector<Item*> ItemVector;
+typedef std::unordered_set<Creature*> SpectatorVec;
 
 enum tileflags_t : uint32_t {
 	TILESTATE_NONE = 0,
@@ -230,7 +144,7 @@ class TileItemVector : private ItemVector
 		}
 
 	private:
-		uint32_t downItemCount = 0;
+		uint16_t downItemCount = 0;
 };
 
 class Tile : public Cylinder
@@ -238,9 +152,7 @@ class Tile : public Cylinder
 	public:
 		static Tile& nullptr_tile;
 		Tile(uint16_t x, uint16_t y, uint8_t z) : tilePos(x, y, z) {}
-		virtual ~Tile() {
-			delete ground;
-		};
+		virtual ~Tile();
 
 		// non-copyable
 		Tile(const Tile&) = delete;
@@ -293,16 +205,13 @@ class Tile : public Cylinder
 		bool hasProperty(ITEMPROPERTY prop) const;
 		bool hasProperty(const Item* exclude, ITEMPROPERTY prop) const;
 
-		bool hasFlag(uint32_t flag) const {
+		inline bool hasFlag(uint32_t flag) const {
 			return hasBitSet(flag, this->flags);
 		}
-		uint32_t getFlags() {
-			return flags;
-		}
-		void setFlag(uint32_t flag) {
+		inline void setFlag(uint32_t flag) {
 			this->flags |= flag;
 		}
-		void resetFlag(uint32_t flag) {
+		inline void resetFlag(uint32_t flag) {
 			this->flags &= ~flag;
 		}
 
@@ -353,7 +262,7 @@ class Tile : public Cylinder
 		void postAddNotification(Thing* thing, const Cylinder* oldParent, int32_t index, cylinderlink_t link = LINK_OWNER) final;
 		void postRemoveNotification(Thing* thing, const Cylinder* newParent, int32_t index, cylinderlink_t link = LINK_OWNER) final;
 
-		void internalAddThing(Thing* thing) override final;
+		void internalAddThing(Thing* thing) final;
 		void internalAddThing(uint32_t index, Thing* thing) override;
 
 		const Position& getPosition() const final {
@@ -364,8 +273,7 @@ class Tile : public Cylinder
 			return false;
 		}
 
-		Item* getUseItem(int32_t index) const;
-		Item* getDoorItem() const;
+		Item* getUseItem() const;
 
 		Item* getGround() const {
 			return ground;
@@ -377,8 +285,8 @@ class Tile : public Cylinder
 	private:
 		void onAddTileItem(Item* item);
 		void onUpdateTileItem(Item* oldItem, const ItemType& oldType, Item* newItem, const ItemType& newType);
-		void onRemoveTileItem(const SpectatorHashSet& spectators, const std::vector<int32_t>& oldStackPosVector, Item* item);
-		void onUpdateTile(const SpectatorHashSet& spectators);
+		void onRemoveTileItem(const SpectatorVec& list, const std::vector<int32_t>& oldStackPosVector, Item* item);
+		void onUpdateTile(const SpectatorVec& list);
 
 		void setTileFlags(const Item* item);
 		void resetTileFlags(const Item* item);
@@ -399,11 +307,7 @@ class DynamicTile : public Tile
 
 	public:
 		DynamicTile(uint16_t x, uint16_t y, uint8_t z) : Tile(x, y, z) {}
-		~DynamicTile() {
-			for (Item* item : items) {
-				item->decrementReferenceCounter();
-			}
-		}
+		~DynamicTile();
 
 		// non-copyable
 		DynamicTile(const DynamicTile&) = delete;
@@ -439,13 +343,7 @@ class StaticTile final : public Tile
 
 	public:
 		StaticTile(uint16_t x, uint16_t y, uint8_t z) : Tile(x, y, z) {}
-		~StaticTile() {
-			if (items) {
-				for (Item* item : *items) {
-					item->decrementReferenceCounter();
-				}
-			}
-		}
+		~StaticTile();
 
 		// non-copyable
 		StaticTile(const StaticTile&) = delete;
@@ -477,5 +375,26 @@ class StaticTile final : public Tile
 			return creatures.get();
 		}
 };
+
+inline Tile::~Tile()
+{
+	delete ground;
+}
+
+inline StaticTile::~StaticTile()
+{
+	if (items) {
+		for (Item* item : *items) {
+			item->decrementReferenceCounter();
+		}
+	}
+}
+
+inline DynamicTile::~DynamicTile()
+{
+	for (Item* item : items) {
+		item->decrementReferenceCounter();
+	}
+}
 
 #endif

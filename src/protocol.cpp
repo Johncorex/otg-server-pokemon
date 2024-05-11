@@ -1,6 +1,6 @@
 /**
  * The Forgotten Server - a free and open-source MMORPG server emulator
- * Copyright (C) 2019 Mark Samman <mark.samman@gmail.com>
+ * Copyright (C) 2016  Mark Samman <mark.samman@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -25,21 +25,14 @@
 
 extern RSA g_RSA;
 
-void Protocol::onSendMessage(const OutputMessage_ptr& msg)
+void Protocol::onSendMessage(const OutputMessage_ptr& msg) const
 {
 	if (!rawMessages) {
 		msg->writeMessageLength();
 
 		if (encryptionEnabled) {
 			XTEA_encrypt(*msg);
-			if (checksumMethod == CHECKSUM_METHOD_NONE) {
-				msg->addCryptoHeader(false, 0);
-			} else if (checksumMethod == CHECKSUM_METHOD_ADLER32) {
-				msg->addCryptoHeader(true, adlerChecksum(msg->getOutputBuffer(), msg->getLength()));
-			} else if (checksumMethod == CHECKSUM_METHOD_SEQUENCE) {
-				msg->addCryptoHeader(true, sequenceNumber++);
-				sequenceNumber &= 0x7FFFFFFF;
-			}
+			msg->addCryptoHeader(checksumEnabled);
 		}
 	}
 }
@@ -132,7 +125,7 @@ bool Protocol::XTEA_decrypt(NetworkMessage& msg) const
 		readPos += 4;
 	}
 
-	uint16_t innerLength = msg.get<uint16_t>();
+	int innerLength = msg.get<uint16_t>();
 	if (innerLength > msg.getLength() - 8) {
 		return false;
 	}

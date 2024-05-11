@@ -1,6 +1,6 @@
 /**
  * The Forgotten Server - a free and open-source MMORPG server emulator
- * Copyright (C) 2019 Mark Samman <mark.samman@gmail.com>
+ * Copyright (C) 2016  Mark Samman <mark.samman@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,18 +20,11 @@
 #ifndef FS_CONFIGMANAGER_H_6BDD23BD0B8344F4B7C40E8BE6AF6F39
 #define FS_CONFIGMANAGER_H_6BDD23BD0B8344F4B7C40E8BE6AF6F39
 
+#include <lua.hpp>
+
 class ConfigManager
 {
 	public:
-		struct ProxyInfo {
-			std::string ip;
-			uint16_t port;
-			std::string name;
-
-			ProxyInfo() : ip(""), port(0), name("") {}
-			ProxyInfo(const std::string& ip, uint16_t port, const std::string& name) : ip(ip), port(port), name(name) {}
-		};
-
 		enum boolean_config_t {
 			ALLOW_CHANGEOUTFIT,
 			ONE_PLAYER_ON_ACCOUNT,
@@ -49,27 +42,22 @@ class ConfigManager
 			WARN_UNSAFE_SCRIPTS,
 			CONVERT_UNSAFE_SCRIPTS,
 			CLASSIC_EQUIPMENT_SLOTS,
-			CLASSIC_ATTACK_SPEED,
-			SCRIPTS_CONSOLE_LOGS,
-			ALLOW_BLOCK_SPAWN,
-			REMOVE_WEAPON_AMMO,
-			REMOVE_WEAPON_CHARGES,
-			REMOVE_POTION_CHARGES,
-			STOREMODULES,
-			QUEST_LUA,
-			EXPERT_PVP,
-			SHOW_PACKETS,
-			ENABLE_LIVE_CASTING,
-			PROTO_BUFF,
-			MAINTENANCE,
-			FORCE_MONSTERTYPE_LOAD,
-			YELL_ALLOW_PREMIUM,
-			BLESS_RUNE,
 
 			LAST_BOOLEAN_CONFIG /* this must be the last one */
 		};
 
+		enum double_config_t { //pota
+			MONSTERLEVEL_BONUSEXP,
+			MONSTERLEVEL_BONUSDMG,
+			MONSTERLEVEL_BONUSSPEED,
+			MONSTERLEVEL_BONUSLOOT,
+			MONSTERLEVEL_BONUSHEALTH,
+
+			LAST_DOUBLE_CONFIG
+		};
+
 		enum string_config_t {
+			DUMMY_STR,
 			MAP_NAME,
 			HOUSE_RENT_PERIOD,
 			SERVER_NAME,
@@ -87,13 +75,7 @@ class ConfigManager
 			MYSQL_SOCK,
 			DEFAULT_PRIORITY,
 			MAP_AUTHOR,
-			STORE_IMAGES_URL,
-			VERSION_STR,
-			DEFAULT_OFFER,
-			PROXY_LIST,
-			BLOCK_WORD,
-			MONSTER_URL,
-			ITEM_URL,
+			MONSTERLEVEL_PREFIX, //pota
 
 			LAST_STRING_CONFIG /* this must be the last one */
 		};
@@ -110,6 +92,8 @@ class ConfigManager
 			RATE_MAGIC,
 			RATE_SPAWN,
 			HOUSE_PRICE,
+			KILLS_TO_RED,
+			KILLS_TO_BLACK,
 			MAX_MESSAGEBUFFER,
 			ACTIONS_DELAY_INTERVAL,
 			EX_ACTIONS_DELAY_INTERVAL,
@@ -122,50 +106,14 @@ class ConfigManager
 			GAME_PORT,
 			LOGIN_PORT,
 			STATUS_PORT,
-			CHECK_PORT,
 			STAIRHOP_DELAY,
-			MAX_CONTAINER,
-			MAX_ITEM,
 			MARKET_OFFER_DURATION,
 			CHECK_EXPIRED_MARKET_OFFERS_EACH_MINUTES,
 			MAX_MARKET_OFFERS_AT_A_TIME_PER_PLAYER,
 			EXP_FROM_PLAYERS_LEVEL_RANGE,
 			MAX_PACKETS_PER_SECOND,
-			STORE_COINS_PACKET_SIZE,
-			VERSION_MIN,
-			VERSION_MAX,
-			FREE_DEPOT_LIMIT,
-			PREMIUM_DEPOT_LIMIT,
-			DEPOT_BOXES,
-			AUTOLOOT_MODE, //Autoloot
-			DAY_KILLS_TO_RED,
-			WEEK_KILLS_TO_RED,
-			MONTH_KILLS_TO_RED,
-			RED_SKULL_DURATION,
-			BLACK_SKULL_DURATION,
-			ORANGE_SKULL_DURATION,
-			NETWORK_ATTACK_THRESHOLD,
-			LIVE_CAST_PORT,
-			SERVER_SAVE_NOTIFY_DURATION,
-			YELL_MINIMUM_LEVEL,
-			TIME_GMT,
 
 			LAST_INTEGER_CONFIG /* this must be the last one */
-		};
-
-		enum floating_config_t {
-			RATE_MONSTER_HEALTH,
-			RATE_MONSTER_ATTACK,
-			RATE_MONSTER_DEFENSE,
-
-			LAST_FLOATING_CONFIG
-		};
-
-		enum doubling_config_t {
-			RATE_MONSTER_SPEED,
-			SPAWN_SPEED,
-
-			LAST_DOUBLING_CONFIG
 		};
 
 		bool load();
@@ -174,26 +122,18 @@ class ConfigManager
 		const std::string& getString(string_config_t what) const;
 		int32_t getNumber(integer_config_t what) const;
 		bool getBoolean(boolean_config_t what) const;
-		float getFloat(floating_config_t what) const;
-		double getDouble(doubling_config_t what) const;
-		std::pair<bool, const ConfigManager::ProxyInfo&> getProxyInfo(uint16_t proxyId);
-
-		std::string const& setConfigFileLua(const std::string& what) {
-			configFileLua = { what };
-			return configFileLua;
-		};
-		std::string const& getConfigFileLua() const {
-			return configFileLua;
-		};
+		double getDouble(double_config_t what) const; //pota
 
 	private:
-		std::string configFileLua = { "config.lua" };
+		static std::string getGlobalString(lua_State* L, const char* identifier, const char* defaultValue);
+		static int32_t getGlobalNumber(lua_State* L, const char* identifier, const int32_t defaultValue = 0);
+		static bool getGlobalBoolean(lua_State* L, const char* identifier, const bool defaultValue);
+		static double getGlobalDouble(lua_State* L, const char* identifier, const double defaultValue = 0.0); //pota
+
 		std::string string[LAST_STRING_CONFIG] = {};
 		int32_t integer[LAST_INTEGER_CONFIG] = {};
 		bool boolean[LAST_BOOLEAN_CONFIG] = {};
-		float floating[LAST_FLOATING_CONFIG] = {};
-		double doubling[LAST_DOUBLING_CONFIG] = {};
-		std::map<uint16_t, ProxyInfo> proxyList;
+		double decimal[LAST_DOUBLE_CONFIG] = {}; //pota
 
 		bool loaded = false;
 };

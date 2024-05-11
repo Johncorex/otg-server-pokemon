@@ -1,6 +1,6 @@
 /**
  * The Forgotten Server - a free and open-source MMORPG server emulator
- * Copyright (C) 2019 Mark Samman <mark.samman@gmail.com>
+ * Copyright (C) 2016  Mark Samman <mark.samman@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -21,8 +21,7 @@
 #define FS_TOOLS_H_5F9A9742DA194628830AA1C64909AE43
 
 #include <random>
-#include <regex>
-#include <boost/algorithm/string.hpp>
+
 #include "position.h"
 #include "const.h"
 #include "enums.h"
@@ -39,12 +38,12 @@ void toLowerCaseString(std::string& source);
 std::string asLowerCaseString(std::string source);
 std::string asUpperCaseString(std::string source);
 
-using StringVector = std::vector<std::string>;
-using IntegerVector = std::vector<int32_t>;
+typedef std::vector<std::string> StringVec;
+typedef std::vector<int32_t> IntegerVec;
 
-StringVector explodeString(const std::string& inString, const std::string& separator, int32_t limit = -1);
-IntegerVector vectorAtoi(const StringVector& stringVector);
-constexpr bool hasBitSet(uint32_t flag, uint32_t flags) {
+StringVec explodeString(const std::string& inString, const std::string& separator, int32_t limit = -1);
+IntegerVec vectorAtoi(const StringVec& stringVector);
+inline bool hasBitSet(uint32_t flag, uint32_t flags) {
 	return (flags & flag) != 0;
 }
 
@@ -69,10 +68,9 @@ MagicEffectClasses getMagicEffect(const std::string& strValue);
 ShootType_t getShootType(const std::string& strValue);
 Ammo_t getAmmoType(const std::string& strValue);
 WeaponAction_t getWeaponAction(const std::string& strValue);
+CombatType_t getCombatType(const std::string& strValue);
 Skulls_t getSkullType(const std::string& strValue);
-SpawnType_t getSpawnType(const std::string& strValue);
 std::string getCombatName(CombatType_t combatType);
-CombatType_t getCombatType(const std::string& combatname);
 
 std::string getSkillName(uint8_t skillid);
 
@@ -94,61 +92,9 @@ itemAttrTypes stringToItemAttribute(const std::string& str);
 
 const char* getReturnMessage(ReturnValue value);
 
-void capitalizeWords(std::string &source);
-NameEval_t validateName(const std::string &name);
-
-bool isCaskItem(uint16_t itemId);
-
-int64_t OTSYS_TIME(bool useTime = false);
-int32_t OS_TIME(time_t* timer);
-
-SpellGroup_t stringToSpellGroup(std::string value);
-
-std::string getObjectCategoryName(ObjectCategory_t category);
-
-std::string generateRK(size_t length);
-
-template<typename T>
-std::vector<T> selectRandom(std::vector<T> from, size_t k) {
-	std::shuffle(begin(from), std::end(from), getRandomGenerator());
-	from.resize(std::min<size_t>(k, from.size()));
-	std::sort(std::begin(from), std::end(from));
-	return from;
-}
-
-template<typename T, typename... Args>
-std::vector<T> selectRandom(std::vector<T> from, size_t k, const std::vector<T>& elim, Args&&... args) {
-	std::vector<T> wh;
-
-	auto it2 = std::begin(elim);
-	for (auto it1 = std::begin(from); it1 != std::end(from); it1++) {
-		while (it2 != std::end(elim) && *it2 < *it1) it2++;
-		if (it2 == std::end(elim) || *it2 > *it1) {
-			wh.emplace_back(std::move(*it1));
-		}
-	}
-
-	return selectRandom(std::move(wh), k, std::forward<Args>(args)...);
-}
-
-template<typename T>
-void fastVectorRemoveOne(std::vector<T>& vec, T obj)
+inline int64_t OTSYS_TIME()
 {
-	for (size_t i = 0, len = vec.size(); i < len; i++) {
-		if (vec[i] == obj) {
-			T tmp = vec[len-1];
-			vec[len-1] = vec[i];
-			vec[i] = tmp;
-			vec.pop_back();
-			break;
-		}
-	}
+	return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 }
-
-#if BOOST_VERSION >= 107000
-#define GET_IO_SERVICE(s) ((boost::asio::io_context&)(s).get_executor().context())
-#else
-#define GET_IO_SERVICE(s) ((s).get_io_service())
-#endif
 
 #endif

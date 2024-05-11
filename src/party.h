@@ -1,6 +1,6 @@
 /**
  * The Forgotten Server - a free and open-source MMORPG server emulator
- * Copyright (C) 2019 Mark Samman <mark.samman@gmail.com>
+ * Copyright (C) 2016  Mark Samman <mark.samman@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,7 +26,7 @@
 class Player;
 class Party;
 
-using PlayerVector = std::vector<Player*>;
+typedef std::vector<Player*> PlayerVector;
 
 class Party
 {
@@ -48,12 +48,6 @@ class Party
 		size_t getInvitationCount() const {
 			return inviteList.size();
 		}
-		uint32_t getStartTime() const {
-			return starttime;
-		}
-		uint16_t getID() const {
-			return id;
-		}
 
 		void disband();
 		bool invitePlayer(Player& player);
@@ -67,7 +61,7 @@ class Party
 		bool isPlayerInvited(const Player* player) const;
 		void updateAllPartyIcons();
 		void broadcastPartyMessage(MessageClasses msgClass, const std::string& msg, bool sendToInvitations = false);
-		void broadcastPartyMana(const Player* player);
+		void broadcastPartyLoot(const std::string& loot);
 		bool empty() const {
 			return memberList.empty() && inviteList.empty();
 		}
@@ -84,10 +78,11 @@ class Party
 		bool canUseSharedExperience(const Player* player) const;
 		void updateSharedExperience();
 
+		void updateVocationsList();
+
 		void updatePlayerTicks(Player* player, uint32_t points);
 		void clearPlayerPoints(Player* player);
 
-		static uint16_t partyAutoID;
 	protected:
 		bool canEnableSharedExperience();
 
@@ -96,11 +91,9 @@ class Party
 		PlayerVector memberList;
 		PlayerVector inviteList;
 
-		uint16_t id;
-
 		Player* leader;
 
-		uint32_t starttime;
+		float extraExpRate = 0.20f;
 
 		bool sharedExpActive = false;
 		bool sharedExpEnabled = false;

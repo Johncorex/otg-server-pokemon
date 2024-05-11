@@ -1,6 +1,6 @@
 /**
  * The Forgotten Server - a free and open-source MMORPG server emulator
- * Copyright (C) 2019 Mark Samman <mark.samman@gmail.com>
+ * Copyright (C) 2016  Mark Samman <mark.samman@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -31,7 +31,6 @@ struct GuildRank {
 		id(id), name(std::move(name)), level(level) {}
 };
 
-using GuildRank_ptr = std::shared_ptr<GuildRank>;
 class Guild
 {
 	public:
@@ -52,38 +51,12 @@ class Guild
 		uint32_t getMemberCount() const {
 			return memberCount;
 		}
-		
-		uint64_t getBalance() const {
-			return balance;
-		}
-		void setBalance(uint64_t _balance);
-
-		uint32_t getLevel() const {
-			return level;
-		}
-		uint32_t getPoints() const {
-			return points;
-		}
-
-		uint32_t getPrivateWarRival() const {
-			return privateWarRival;
-		}
-		
-		void setPrivateWarRival(uint32_t rival);
-		void setPoints(uint32_t _points);
-		void setLevel(uint32_t _level);
-
 		void setMemberCount(uint32_t count) {
 			memberCount = count;
 		}
 
-		const std::vector<GuildRank_ptr>& getRanks() const {
-			return ranks;
-		}
-
-		GuildRank_ptr getRankById(uint32_t id);
-		GuildRank_ptr getRankByName(const std::string& name) const;
-		GuildRank_ptr getRankByLevel(uint8_t level) const;
+		GuildRank* getRankById(uint32_t id);
+		const GuildRank* getRankByLevel(uint8_t level) const;
 		void addRank(uint32_t id, const std::string& name, uint8_t level);
 
 		const std::string& getMotd() const {
@@ -95,16 +68,11 @@ class Guild
 
 	private:
 		std::list<Player*> membersOnline;
-		std::vector<GuildRank_ptr> ranks;
+		std::vector<GuildRank> ranks;
 		std::string name;
 		std::string motd;
-		uint32_t points = 0;
-		uint32_t level = 1;
-		uint64_t balance = 0;
 		uint32_t id;
 		uint32_t memberCount = 0;
-		uint32_t privateWarRival = 0;
-
 };
 
 #endif

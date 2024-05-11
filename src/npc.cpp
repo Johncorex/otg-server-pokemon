@@ -1,6 +1,6 @@
 /**
  * The Forgotten Server - a free and open-source MMORPG server emulator
- * Copyright (C) 2019 Mark Samman <mark.samman@gmail.com>
+ * Copyright (C) 2016  Mark Samman <mark.samman@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,7 +26,7 @@
 extern Game g_game;
 extern LuaEnvironment g_luaEnvironment;
 
-uint32_t Npc::npcAutoID = 0xF0000000;
+uint32_t Npc::npcAutoID = 0x80000000;
 NpcScriptInterface* Npc::scriptInterface = nullptr;
 
 void Npcs::reload()
@@ -98,7 +98,6 @@ bool Npc::load()
 void Npc::reset()
 {
 	loaded = false;
-	isIdle = true;
 	walkTicks = 1500;
 	floorChange = false;
 	attackable = false;
@@ -171,7 +170,7 @@ bool Npc::loadFromXml()
 	}
 
 	if ((attr = npcNode.attribute("skull"))) {
-		setSkull(getSkullType(asLowerCaseString(attr.as_string())));
+		setSkull(getSkullType(attr.as_string()));
 	}
 
 	pugi::xml_node healthNode = npcNode.child("health");
@@ -252,13 +251,10 @@ void Npc::onCreatureAppear(Creature* creature, bool isLogin)
 		if (npcEventHandler) {
 			npcEventHandler->onCreatureAppear(creature);
 		}
-	} else if (Player* player = creature->getPlayer()) {
+	} else if (creature->getPlayer()) {
 		if (npcEventHandler) {
 			npcEventHandler->onCreatureAppear(creature);
 		}
-
-		spectators.insert(player);
-		updateIdleStatus();
 	}
 }
 
@@ -271,37 +267,21 @@ void Npc::onRemoveCreature(Creature* creature, bool isLogout)
 		if (npcEventHandler) {
 			npcEventHandler->onCreatureDisappear(creature);
 		}
-	} else if (Player* player = creature->getPlayer()) {
+	} else if (creature->getPlayer()) {
 		if (npcEventHandler) {
 			npcEventHandler->onCreatureDisappear(creature);
 		}
-
-		spectators.erase(player);
-		updateIdleStatus();
 	}
 }
 
 void Npc::onCreatureMove(Creature* creature, const Tile* newTile, const Position& newPos,
-						 const Tile* oldTile, const Position& oldPos, bool teleport)
+                         const Tile* oldTile, const Position& oldPos, bool teleport)
 {
 	Creature::onCreatureMove(creature, newTile, newPos, oldTile, oldPos, teleport);
 
 	if (creature == this || creature->getPlayer()) {
 		if (npcEventHandler) {
 			npcEventHandler->onCreatureMove(creature, oldPos, newPos);
-		}
-
-		if (creature != this) {
-			Player* player = creature->getPlayer();
-
-			// if player is now in range, add to spectators list, otherwise erase
-			if (player->canSee(position)) {
-				spectators.insert(player);
-			} else {
-				spectators.erase(player);
-			}
-
-			updateIdleStatus();
 		}
 	}
 }
@@ -336,7 +316,7 @@ void Npc::onThink(uint32_t interval)
 		npcEventHandler->onThink();
 	}
 
-	if (!isIdle && getTimeSinceLastMove() >= walkTicks) {
+	if (getTimeSinceLastMove() >= walkTicks) {
 		addEventWalk();
 	}
 }
@@ -355,7 +335,7 @@ void Npc::doSayToPlayer(Player* player, const std::string& text)
 }
 
 void Npc::onPlayerTrade(Player* player, int32_t callback, uint16_t itemId, uint8_t count,
-						uint8_t amount, bool ignore/* = false*/, bool inBackpacks/* = false*/)
+                        uint8_t amount, bool ignore/* = false*/, bool inBackpacks/* = false*/)
 {
 	if (npcEventHandler) {
 		npcEventHandler->onPlayerTrade(player, callback, itemId, count, amount, ignore, inBackpacks);
@@ -401,27 +381,6 @@ bool Npc::getNextStep(Direction& dir, uint32_t& flags)
 	}
 
 	return getRandomStep(dir);
-}
-
-void Npc::setIdle(bool idle)
-{
-	if (isRemoved() || getHealth() <= 0) {
-		return;
-	}
-
-	isIdle = idle;
-
-	if (isIdle) {
-		onIdleStatus();
-	}
-}
-
-void Npc::updateIdleStatus()
-{
-	bool status = spectators.empty();
-	if (status != isIdle) {
-		setIdle(status);
-	}
 }
 
 bool Npc::canWalkTo(const Position& fromPos, Direction dir) const
@@ -1201,7 +1160,7 @@ void NpcEventsHandler::onCreatureSay(Creature* creature, SpeakClasses type, cons
 }
 
 void NpcEventsHandler::onPlayerTrade(Player* player, int32_t callback, uint16_t itemid,
-							  uint8_t count, uint8_t amount, bool ignore, bool inBackpacks)
+                              uint8_t count, uint8_t amount, bool ignore, bool inBackpacks)
 {
 	if (callback == -1) {
 		return;

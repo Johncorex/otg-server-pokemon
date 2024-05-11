@@ -1,6 +1,6 @@
-﻿/**
+/**
  * The Forgotten Server - a free and open-source MMORPG server emulator
- * Copyright (C) 2019 Mark Samman <mark.samman@gmail.com>
+ * Copyright (C) 2016  Mark Samman <mark.samman@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -25,18 +25,6 @@
 #include "itemloader.h"
 #include "position.h"
 
-// #include "protobuf/appearances.pb.h"
-
-// struct Appearance {
-// 	bool cumulative = false;
-// 	bool liquidcontainer = false;
-// 	bool liquidpool = false;
-// 	bool isAnimation = false;
-// 	bool isContainer = false;
-// 	bool isCorpse = false;
-// 	bool isPlayerCorpse = false;
-// };
-
 enum SlotPositionBits : uint32_t {
 	SLOTP_WHEREEVER = 0xFFFFFFFF,
 	SLOTP_HEAD = 1 << 0,
@@ -51,6 +39,8 @@ enum SlotPositionBits : uint32_t {
 	SLOTP_AMMO = 1 << 9,
 	SLOTP_DEPOT = 1 << 10,
 	SLOTP_TWO_HAND = 1 << 11,
+	SLOTP_ORDER = 1 << 12, //pota
+	SLOTP_INFO = 1 << 13, //pota
 	SLOTP_HAND = (SLOTP_LEFT | SLOTP_RIGHT)
 };
 
@@ -66,35 +56,7 @@ enum ItemTypes_t {
 	ITEM_TYPE_BED,
 	ITEM_TYPE_KEY,
 	ITEM_TYPE_RUNE,
-	ITEM_TYPE_REWARDCHEST,
-	ITEM_TYPE_CARPET,
-	ITEM_TYPE_CREATUREPRODUCT,
-	ITEM_TYPE_FOOD,
-	ITEM_TYPE_VALUABLE,
-	ITEM_TYPE_POTION,
-
-	ITEM_TYPE_ARMOR,
-	ITEM_TYPE_AMULET,
-	ITEM_TYPE_BOOTS,
-	ITEM_TYPE_DECORATION,
-	ITEM_TYPE_HELMET,
-	ITEM_TYPE_LEGS,
-	ITEM_TYPE_OTHER,
-	ITEM_TYPE_RING,
-	ITEM_TYPE_SHIELD,
-	ITEM_TYPE_TOOLS,
-	ITEM_TYPE_AMMO,
-	ITEM_TYPE_AXE,
-	ITEM_TYPE_CLUB,
-	ITEM_TYPE_DISTANCE,
-	ITEM_TYPE_SWORD,
-	ITEM_TYPE_WAND,
-
-	ITEM_TYPE_RETRIEVE,
-	ITEM_TYPE_GOLD,
-	ITEM_TYPE_UNASSIGNED,
-
-	ITEM_TYPE_LAST,
+	ITEM_TYPE_LAST
 };
 
 struct Abilities {
@@ -120,9 +82,6 @@ struct Abilities {
 
 	//damage abilities modifiers
 	int16_t absorbPercent[COMBAT_COUNT] = { 0 };
-
-	//relfect abilities modifires
-	int16_t reflectPercent[COMBAT_COUNT] = { 0 };
 
 	//elemental damage
 	uint16_t elementDamage = 0;
@@ -175,12 +134,6 @@ class ItemType
 		bool isDepot() const {
 			return (type == ITEM_TYPE_DEPOT);
 		}
-		bool isRewardChest() const {
-			return (type == ITEM_TYPE_REWARDCHEST);
-		}
-		bool isCarpet() const {
-			return (type == ITEM_TYPE_CARPET);
-		}
 		bool isMailbox() const {
 			return (type == ITEM_TYPE_MAILBOX);
 		}
@@ -191,13 +144,7 @@ class ItemType
 			return (type == ITEM_TYPE_BED);
 		}
 		bool isRune() const {
-			return (type == ITEM_TYPE_RUNE);
-		}
-		bool isPickupable() const {
-			return (allowPickupable || pickupable);
-		}
-		bool isUseable() const {
-			return (useable);
+			return type == ITEM_TYPE_RUNE;
 		}
 		bool hasSubType() const {
 			return (isFluidContainer() || isSplash() || stackable || charges != 0);
@@ -256,11 +203,9 @@ class ItemType
 		int32_t defense = 0;
 		int32_t extraDefense = 0;
 		int32_t armor = 0;
-		int32_t imbuingSlots = 0;
 		int32_t rotateTo = 0;
 		int32_t runeMagLevel = 0;
 		int32_t runeLevel = 0;
-		int32_t wrapableTo = 0;
 
 		CombatType_t combatType = COMBAT_NONE;
 
@@ -305,8 +250,6 @@ class ItemType
 		bool replaceable = true;
 		bool pickupable = false;
 		bool rotatable = false;
-		bool wrapable = false;
-		bool wrapContainer = false;
 		bool useable = false;
 		bool moveable = false;
 		bool alwaysOnTop = false;
@@ -324,8 +267,7 @@ class ItemType
 class Items
 {
 	public:
-		using NameMap = std::unordered_multimap<std::string, uint16_t>;
-		using InventoryVector = std::vector<uint16_t>;
+		using nameMap = std::unordered_multimap<std::string, uint16_t>;
 
 		Items();
 
@@ -337,7 +279,6 @@ class Items
 		void clear();
 
 		FILELOADER_ERRORS loadFromOtb(const std::string& file);
-		// bool loadFromProtobuf(const std::string& file);
 
 		const ItemType& operator[](size_t id) const {
 			return getItemType(id);
@@ -355,24 +296,14 @@ class Items
 		bool loadFromXml();
 		void parseItemNode(const pugi::xml_node& itemNode, uint16_t id);
 
-		void buildInventoryList();
-		const InventoryVector& getInventory() const {
-			return inventory;
-		}
-
-		size_t size() const {
+		inline size_t size() const {
 			return items.size();
 		}
 
-		NameMap nameToItems;
-		// std::map<uint16_t, Appearance> appearancesMap;
+		nameMap nameToItems;
 
 	protected:
-		ItemTypes_t getLootType(const std::string& strValue);
-
 		std::map<uint16_t, uint16_t> reverseItemMap;
 		std::vector<ItemType> items;
-		InventoryVector inventory;
-		// tibia::protobuf::appearances::Appearances appearances;
 };
 #endif

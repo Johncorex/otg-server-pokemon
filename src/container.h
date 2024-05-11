@@ -1,6 +1,6 @@
 /**
  * The Forgotten Server - a free and open-source MMORPG server emulator
- * Copyright (C) 2019 Mark Samman <mark.samman@gmail.com>
+ * Copyright (C) 2016  Mark Samman <mark.samman@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -28,8 +28,6 @@
 class Container;
 class DepotChest;
 class DepotLocker;
-class RewardChest;
-class Reward;
 
 class ContainerIterator
 {
@@ -52,7 +50,7 @@ class Container : public Item, public Cylinder
 {
 	public:
 		explicit Container(uint16_t type);
-		Container(uint16_t type, uint16_t size, bool unlocked = true, bool pagination = false, bool islocker = false);
+		Container(uint16_t type, uint16_t size, bool unlocked = true, bool pagination = false);
 		explicit Container(Tile* type);
 		~Container();
 
@@ -76,22 +74,8 @@ class Container : public Item, public Cylinder
 			return nullptr;
 		}
 
-		virtual RewardChest* getRewardChest() {
-			return nullptr;
-		}
-		virtual const RewardChest* getRewardChest() const {
-			return nullptr;
-		}
-
-		virtual Reward* getReward() {
-			return nullptr;
-		}
-		virtual const Reward* getReward() const {
-			return nullptr;
-		}
-
 		Attr_ReadValue readAttr(AttrTypes_t attr, PropStream& propStream) override;
-		bool unserializeItemNode(OTB::Loader& loader, const OTB::Node& node, PropStream& propStream) override;
+		bool unserializeItemNode(FileLoader& f, NODE node, PropStream& propStream) override;
 		std::string getContentDescription() const;
 
 		size_t size() const {
@@ -123,15 +107,10 @@ class Container : public Item, public Cylinder
 		bool isHoldingItem(const Item* item) const;
 
 		uint32_t getItemHoldingCount() const;
-		uint32_t getContainerHoldingCount() const;
-		uint16_t getFreeSlots() const;
 		uint32_t getWeight() const final;
 
 		bool isUnlocked() const {
 			return unlocked;
-		}
-		bool isLocker() const {
-			return islocker;
 		}
 		bool hasPagination() const {
 			return pagination;
@@ -175,7 +154,6 @@ class Container : public Item, public Cylinder
 		void onRemoveContainerItem(uint32_t index, Item* item);
 
 		Container* getParentContainer();
-		Container* getTopParentContainer() const;
 		void updateItemWeight(int32_t diff);
 
 	protected:
@@ -188,11 +166,9 @@ class Container : public Item, public Cylinder
 
 		bool unlocked;
 		bool pagination;
-		bool islocker = false;
 
 		friend class ContainerIterator;
 		friend class IOMapSerialize;
-		friend class IOLoginData;
 };
 
 #endif

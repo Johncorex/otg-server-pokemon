@@ -1,6 +1,6 @@
 /**
  * The Forgotten Server - a free and open-source MMORPG server emulator
- * Copyright (C) 2019 Mark Samman <mark.samman@gmail.com>
+ * Copyright (C) 2016  Mark Samman <mark.samman@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -23,14 +23,12 @@
 #include "configmanager.h"
 #include "game.h"
 #include "pugicast.h"
-#include "events.h"
 #include "weapons.h"
 
 extern Game g_game;
 extern Vocations g_vocations;
 extern ConfigManager g_config;
 extern Weapons* g_weapons;
-extern Events* g_events;
 
 Weapons::Weapons()
 {
@@ -39,7 +37,7 @@ Weapons::Weapons()
 
 Weapons::~Weapons()
 {
-	clear(false);
+	clear();
 }
 
 const Weapon* Weapons::getWeapon(const Item* item) const
@@ -55,17 +53,14 @@ const Weapon* Weapons::getWeapon(const Item* item) const
 	return it->second;
 }
 
-void Weapons::clear(bool fromLua)
+void Weapons::clear()
 {
-	for (auto it = weapons.begin(); it != weapons.end(); ) {
-		if (fromLua == it->second->fromLua) {
-			it = weapons.erase(it);
-		} else {
-			++it;
-		}
+	for (const auto& it : weapons) {
+		delete it.second;
 	}
+	weapons.clear();
 
-	reInitState(fromLua);
+	scriptInterface.reInitState();
 }
 
 LuaScriptInterface& Weapons::getScriptInterface()
@@ -114,35 +109,27 @@ void Weapons::loadDefaults()
 	}
 }
 
-Event_ptr Weapons::getEvent(const std::string& nodeName)
+Event* Weapons::getEvent(const std::string& nodeName)
 {
 	if (strcasecmp(nodeName.c_str(), "melee") == 0) {
-		return Event_ptr(new WeaponMelee(&scriptInterface));
+		return new WeaponMelee(&scriptInterface);
 	} else if (strcasecmp(nodeName.c_str(), "distance") == 0) {
-		return Event_ptr(new WeaponDistance(&scriptInterface));
+		return new WeaponDistance(&scriptInterface);
 	} else if (strcasecmp(nodeName.c_str(), "wand") == 0) {
-		return Event_ptr(new WeaponWand(&scriptInterface));
+		return new WeaponWand(&scriptInterface);
 	}
 	return nullptr;
 }
 
-bool Weapons::registerEvent(Event_ptr event, const pugi::xml_node&)
+bool Weapons::registerEvent(Event* event, const pugi::xml_node&)
 {
-	Weapon* weapon = static_cast<Weapon*>(event.release()); //event is guaranteed to be a Weapon
+	Weapon* weapon = static_cast<Weapon*>(event); //event is guaranteed to be a Weapon
 
 	auto result = weapons.emplace(weapon->getID(), weapon);
 	if (!result.second) {
 		std::cout << "[Warning - Weapons::registerEvent] Duplicate registered item with id: " << weapon->getID() << std::endl;
 	}
 	return result.second;
-}
-
-bool Weapons::registerLuaEvent(Weapon* event)
-{
-	Weapon_ptr weapon{ event };
-	weapons[weapon->getID()] = weapon.release();
-
-	return true;
 }
 
 //monsters
@@ -190,12 +177,12 @@ bool Weapon::configureEvent(const pugi::xml_node& node)
 		premium = attr.as_bool();
 	}
 
-	if ((attr = node.attribute("breakchance")) && g_config.getBoolean(ConfigManager::REMOVE_WEAPON_CHARGES)) {
+	if ((attr = node.attribute("breakchance"))) {
 		breakChance = std::min<uint8_t>(100, pugi::cast<uint16_t>(attr.value()));
 	}
 
 	if ((attr = node.attribute("action"))) {
-		action = getWeaponAction(asLowerCaseString(attr.as_string()));
+		action = getWeaponAction(attr.as_string());
 		if (action == WEAPONACTION_NONE) {
 			std::cout << "[Warning - Weapon::configureEvent] Unknown action " << attr.as_string() << std::endl;
 		}
@@ -303,10 +290,6 @@ int32_t Weapon::playerWeaponCheck(Player* player, Creature* target, uint8_t shoo
 		if (player->getMana() < getManaCost(player)) {
 			return 0;
 		}
-		
-		if (player->getHealth() < getHealthCost(player)) {
-			return 0;
-		}
 
 		if (player->getSoul() < soul) {
 			return 0;
@@ -369,7 +352,7 @@ bool Weapon::useFist(Player* player, Creature* target)
 	damage.primary.type = params.combatType;
 	damage.primary.value = -normal_random(0, maxDamage);
 
-	Combat::doTargetCombat(player, target, damage, params);
+	Combat::doCombatHealth(player, target, damage, params);
 	if (!player->hasFlag(PlayerFlag_NotGainSkill) && player->getAddAttackSkill()) {
 		player->addSkillAdvance(SKILL_FIST, 1);
 	}
@@ -396,7 +379,7 @@ void Weapon::internalUseWeapon(Player* player, Item* item, Creature* target, int
 		damage.primary.value = (getWeaponDamage(player, target, item) * damageModifier) / 100;
 		damage.secondary.type = getElementType();
 		damage.secondary.value = getElementDamage(player, target, item);
-		Combat::doTargetCombat(player, target, damage, params);
+		Combat::doCombatHealth(player, target, damage, params);
 	}
 
 	onUsedWeapon(player, item, target->getTile());
@@ -432,11 +415,6 @@ void Weapon::onUsedWeapon(Player* player, Item* item, Tile* destTile) const
 		player->addManaSpent(manaCost);
 		player->changeMana(-static_cast<int32_t>(manaCost));
 	}
-	
-	uint32_t healthCost = getHealthCost(player);
-	if (healthCost != 0) {
-		player->changeHealth(-static_cast<int32_t>(healthCost));
-	}
 
 	if (!player->hasFlag(PlayerFlag_HasInfiniteSoul) && soul > 0) {
 		player->changeSoul(-static_cast<int32_t>(soul));
@@ -449,14 +427,12 @@ void Weapon::onUsedWeapon(Player* player, Item* item, Tile* destTile) const
 
 	switch (action) {
 		case WEAPONACTION_REMOVECOUNT:
-			if(g_config.getBoolean(ConfigManager::REMOVE_WEAPON_AMMO)) {
-				Weapon::decrementItemCount(item);
-			}
+			Weapon::decrementItemCount(item);
 			break;
 
 		case WEAPONACTION_REMOVECHARGE: {
 			uint16_t charges = item->getCharges();
-			if (charges != 0 && g_config.getBoolean(ConfigManager::REMOVE_WEAPON_CHARGES)) {
+			if (charges != 0) {
 				g_game.transformItem(item, item->getID(), charges - 1);
 			}
 			break;
@@ -482,19 +458,6 @@ uint32_t Weapon::getManaCost(const Player* player) const
 	}
 
 	return (player->getMaxMana() * manaPercent) / 100;
-}
-
-int32_t Weapon::getHealthCost(const Player* player) const
-{
-	if (health != 0) {
-		return health;
-	}
-
- 	if (healthPercent == 0) {
-		return 0;
-	}
-
- 	return (player->getMaxHealth() * healthPercent) / 100;
 }
 
 bool Weapon::executeUseWeapon(Player* player, const LuaVariant& var) const
@@ -562,7 +525,7 @@ bool WeaponMelee::useWeapon(Player* player, Item* item, Creature* target) const
 }
 
 bool WeaponMelee::getSkillType(const Player* player, const Item* item,
-	skills_t& skill, uint32_t& skillpoint) const
+                               skills_t& skill, uint32_t& skillpoint) const
 {
 	if (player->getAddAttackSkill() && player->getLastAttackBlockType() != BLOCK_IMMUNITY) {
 		skillpoint = 1;
@@ -647,14 +610,14 @@ void WeaponDistance::configureWeapon(const ItemType& it)
 
 bool WeaponDistance::useWeapon(Player* player, Item* item, Creature* target) const
 {
-	int32_t damageModifier = 0;
+	int32_t damageModifier;
 	const ItemType& it = Item::items[id];
 	if (it.weaponType == WEAPON_AMMO) {
 		Item* mainWeaponItem = player->getWeapon(true);
 		const Weapon* mainWeapon = g_weapons->getWeapon(mainWeaponItem);
 		if (mainWeapon) {
 			damageModifier = mainWeapon->playerWeaponCheck(player, target, mainWeaponItem->getShootRange());
-		} else if (mainWeaponItem) {
+		} else {
 			damageModifier = playerWeaponCheck(player, target, mainWeaponItem->getShootRange());
 		}
 	} else {
@@ -922,6 +885,8 @@ bool WeaponWand::configureEvent(const pugi::xml_node& node)
 			params.combatType = COMBAT_DEATHDAMAGE;
 		} else if (tmpStrValue == "holy") {
 			params.combatType = COMBAT_HOLYDAMAGE;
+		} else if (tmpStrValue == "none") {
+			params.combatType = COMBAT_NONE;
 		} else {
 			std::cout << "[Warning - WeaponWand::configureEvent] Type \"" << attr.as_string() << "\" does not exist." << std::endl;
 		}

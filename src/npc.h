@@ -1,6 +1,6 @@
 /**
  * The Forgotten Server - a free and open-source MMORPG server emulator
- * Copyright (C) 2019 Mark Samman <mark.samman@gmail.com>
+ * Copyright (C) 2016  Mark Samman <mark.samman@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -124,12 +124,6 @@ class Npc final : public Creature
 		void setID() final {
 			if (id == 0) {
 				id = npcAutoID++;
-				setCombatID();
-			}
-		}
-		void setCombatID() final {
-			if (combatid == 0) {
-				combatid = id;
 			}
 		}
 
@@ -181,7 +175,7 @@ class Npc final : public Creature
 
 		void onPlayerCloseChannel(Player* player);
 		void onPlayerTrade(Player* player, int32_t callback, uint16_t itemId, uint8_t count,
-						   uint8_t amount, bool ignore = false, bool inBackpacks = false);
+		                   uint8_t amount, bool ignore = false, bool inBackpacks = false);
 		void onPlayerEndTrade(Player* player, int32_t buyCallback, int32_t sellCallback);
 
 		void turnToCreature(Creature* creature);
@@ -197,7 +191,7 @@ class Npc final : public Creature
 		void onCreatureAppear(Creature* creature, bool isLogin) final;
 		void onRemoveCreature(Creature* creature, bool isLogout) final;
 		void onCreatureMove(Creature* creature, const Tile* newTile, const Position& newPos,
-									const Tile* oldTile, const Position& oldPos, bool teleport) final;
+		                            const Tile* oldTile, const Position& oldPos, bool teleport) final;
 
 		void onCreatureSay(Creature* creature, SpeakClasses type, const std::string& text) final;
 		void onThink(uint32_t interval) final;
@@ -214,9 +208,6 @@ class Npc final : public Creature
 		}
 		bool getNextStep(Direction& dir, uint32_t& flags) final;
 
-		void setIdle(bool idle);
-		void updateIdleStatus();
-
 		bool canWalkTo(const Position& fromPos, Direction dir) const;
 		bool getRandomStep(Direction& dir) const;
 
@@ -230,7 +221,6 @@ class Npc final : public Creature
 		std::map<std::string, std::string> parameters;
 
 		std::set<Player*> shopPlayerSet;
-		std::set<Player*> spectators;
 
 		std::string name;
 		std::string filename;
@@ -241,7 +231,7 @@ class Npc final : public Creature
 
 		uint32_t walkTicks;
 		int32_t focusCreature;
-		int32_t masterRadius = 2;
+		int32_t masterRadius;
 
 		uint8_t speechBubble;
 
@@ -249,7 +239,6 @@ class Npc final : public Creature
 		bool attackable;
 		bool ignoreHeight;
 		bool loaded;
-		bool isIdle;
 
 		static NpcScriptInterface* scriptInterface;
 

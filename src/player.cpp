@@ -1,6 +1,6 @@
 /**
  * The Forgotten Server - a free and open-source MMORPG server emulator
- * Copyright (C) 2019 Mark Samman <mark.samman@gmail.com>
+ * Copyright (C) 2016  Mark Samman <mark.samman@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -33,7 +33,6 @@
 #include "movement.h"
 #include "scheduler.h"
 #include "weapons.h"
-#include "tools.h"
 
 extern ConfigManager g_config;
 extern Game g_game;
@@ -43,17 +42,13 @@ extern MoveEvents* g_moveEvents;
 extern Weapons* g_weapons;
 extern CreatureEvents* g_creatureEvents;
 extern Events* g_events;
-extern Imbuements g_imbuements;
-extern Prey g_prey;
 
 MuteCountMap Player::muteCountMap;
 
-uint32_t Player::playerCombatAutoID = 0x10000000;
-uint32_t Player::playerAutoID = 0x10010000;
-uint32_t Player::maxPlayerAutoID = 0x60000000;
+uint32_t Player::playerAutoID = 0x10000000;
 
 Player::Player(ProtocolGame_ptr p) :
-	Creature(), preyData(PREY_SLOTCOUNT), lastPing(OTSYS_TIME()), lastPong(lastPing), inbox(new Inbox(ITEM_INBOX)), client(std::move(p))
+	Creature(), lastPing(OTSYS_TIME()), lastPong(lastPing), inbox(new Inbox(ITEM_INBOX)), client(std::move(p))
 {
 	inbox->incrementReferenceCounter();
 }
@@ -72,19 +67,10 @@ Player::~Player()
 		it.second->decrementReferenceCounter();
 	}
 
-	for (const auto& it : rewardMap) {
-		it.second->decrementReferenceCounter();
-	}
-
-	for (const auto& it : quickLootContainers) {
-		it.second->decrementReferenceCounter();
-	}
-
 	inbox->decrementReferenceCounter();
 
 	setWriteItem(nullptr);
 	setEditHouse(nullptr);
-	logged = false;
 }
 
 bool Player::setVocation(uint16_t vocId)
@@ -93,7 +79,6 @@ bool Player::setVocation(uint16_t vocId)
 	if (!voc) {
 		return false;
 	}
-
 	vocation = voc;
 
 	Condition* condition = getCondition(CONDITION_REGENERATION, CONDITIONID_DEFAULT);
@@ -121,14 +106,18 @@ std::string Player::getDescription(int32_t lookDistance) const
 	if (lookDistance == -1) {
 		s << "yourself.";
 
-		if (vocation->getId() != VOCATION_NONE) {
+		if (group->access) {
+			s << " You are " << group->name << '.';
+		} else if (vocation->getId() != VOCATION_NONE) {
 			s << " You are " << vocation->getVocDescription() << '.';
 		} else {
 			s << " You have no vocation.";
 		}
 	} else {
 		s << name;
-		s << " (Level " << level << ')';
+		if (!group->access) {
+			s << " (Level " << level << ')';
+		}
 		s << '.';
 
 		if (sex == PLAYERSEX_FEMALE) {
@@ -137,7 +126,9 @@ std::string Player::getDescription(int32_t lookDistance) const
 			s << " He";
 		}
 
-		if (vocation->getId() != VOCATION_NONE) {
+		if (group->access) {
+			s << " is " << group->name << '.';
+		} else if (vocation->getId() != VOCATION_NONE) {
 			s << " is " << vocation->getVocDescription() << '.';
 		} else {
 			s << " has no vocation.";
@@ -169,12 +160,6 @@ std::string Player::getDescription(int32_t lookDistance) const
 	}
 
 	if (guild && guildRank) {
-		size_t memberCount = guild->getMemberCount();
-		if (memberCount >= 1000) {
-			s << "";
-			return s.str();
-		}
-
 		if (lookDistance == -1) {
 			s << " You are ";
 		} else if (sex == PLAYERSEX_FEMALE) {
@@ -183,18 +168,18 @@ std::string Player::getDescription(int32_t lookDistance) const
 			s << " He is ";
 		}
 
-		s << guildRank->name << " of the " << guild->getName() << " [Level " << guild->getLevel() << "]";
+		s << guildRank->name << " of the " << guild->getName();
 		if (!guildNick.empty()) {
 			s << " (" << guildNick << ')';
 		}
 
+		size_t memberCount = guild->getMemberCount();
 		if (memberCount == 1) {
 			s << ", which has 1 member, " << guild->getMembersOnline().size() << " of them online.";
 		} else {
 			s << ", which has " << memberCount << " members, " << guild->getMembersOnline().size() << " of them online.";
 		}
 	}
-
 	return s.str();
 }
 
@@ -238,8 +223,6 @@ Item* Player::getWeapon(slots_t slot, bool ignoreAmmo) const
 			item = ammoItem;
 		}
 	}
-
-
 	return item;
 }
 
@@ -334,7 +317,7 @@ void Player::getShieldAndWeapon(const Item*& shield, const Item*& weapon) const
 				break;
 
 			case WEAPON_SHIELD: {
-				if (!shield || (shield && item->getDefense() > shield->getDefense())) {
+				if (!shield || item->getDefense() > shield->getDefense()) {
 					shield = item;
 				}
 				break;
@@ -350,39 +333,32 @@ void Player::getShieldAndWeapon(const Item*& shield, const Item*& weapon) const
 
 int32_t Player::getDefense() const
 {
-	int32_t defenseSkill = getSkillLevel(SKILL_FIST);
-	int32_t defenseValue = 7;
+	int32_t baseDefense = 5;
+	int32_t defenseValue = 0;
+	int32_t defenseSkill = 0;
+	int32_t extraDefense = 0;
+	float defenseFactor = getDefenseFactor();
 	const Item* weapon;
 	const Item* shield;
-	try {
-		getShieldAndWeapon(shield, weapon);
-	}
-	catch (const std::exception&) {
-		std::cout << "Got exception" << std::endl;
-	}
+	getShieldAndWeapon(shield, weapon);
 
 	if (weapon) {
-		defenseValue = weapon->getDefense() + weapon->getExtraDefense();
+		defenseValue = baseDefense + weapon->getDefense();
+		extraDefense = weapon->getExtraDefense();
 		defenseSkill = getWeaponSkill(weapon);
 	}
 
-	if (shield) {
-		defenseValue = weapon != nullptr ? shield->getDefense() + weapon->getExtraDefense() : shield->getDefense();
+	if (shield && shield->getDefense() >= defenseValue) {
+		defenseValue = baseDefense + shield->getDefense() + extraDefense;
 		defenseSkill = getSkillLevel(SKILL_SHIELD);
 	}
 
 	if (defenseSkill == 0) {
-		switch (fightMode) {
-			case FIGHTMODE_ATTACK:
-			case FIGHTMODE_BALANCED:
-				return 1;
-
-			case FIGHTMODE_DEFENSE:
-				return 2;
-		}
+		return 0;
 	}
 
-	return (defenseSkill / 4. + 2.23) * defenseValue * 0.15 * getDefenseFactor() * vocation->defenseMultiplier;
+	defenseValue = static_cast<int32_t>(defenseValue * vocation->defenseMultiplier);
+	return static_cast<int32_t>(std::ceil((static_cast<float>(defenseSkill * (defenseValue * 0.015)) + (defenseValue * 0.1)) * defenseFactor));
 }
 
 float Player::getAttackFactor() const
@@ -398,9 +374,15 @@ float Player::getAttackFactor() const
 float Player::getDefenseFactor() const
 {
 	switch (fightMode) {
-		case FIGHTMODE_ATTACK: return (OTSYS_TIME() - lastAttack) < getAttackSpeed() ? 0.5f : 1.0f;
-		case FIGHTMODE_BALANCED: return (OTSYS_TIME() - lastAttack) < getAttackSpeed() ? 0.75f : 1.0f;
-		case FIGHTMODE_DEFENSE: return 1.0f;
+		case FIGHTMODE_ATTACK: return 1.0f;
+		case FIGHTMODE_BALANCED: return 1.2f;
+		case FIGHTMODE_DEFENSE: {
+			if ((OTSYS_TIME() - lastAttack) < getAttackSpeed()) {
+				return 1.0f;
+			}
+
+			return 2.0f;
+		}
 		default: return 1.0f;
 	}
 }
@@ -454,6 +436,20 @@ void Player::updateInventoryWeight()
 	}
 }
 
+int32_t Player::getPlayerInfo(playerinfo_t playerinfo) const
+{
+	switch (playerinfo) {
+		case PLAYERINFO_LEVELPERCENT: return levelPercent;
+		case PLAYERINFO_MAGICLEVEL: return std::max<int32_t>(0, magLevel + varStats[STAT_MAGICPOINTS]);
+		case PLAYERINFO_MAGICLEVELPERCENT: return magLevelPercent;
+		case PLAYERINFO_HEALTH: return health;
+		case PLAYERINFO_MAXHEALTH: return std::max<int32_t>(1, healthMax + varStats[STAT_MAXHITPOINTS]);
+		case PLAYERINFO_MANA: return mana;
+		case PLAYERINFO_MAXMANA: return std::max<int32_t>(0, manaMax + varStats[STAT_MAXMANAPOINTS]);
+		default: return 0;
+	}
+}
+
 void Player::addSkillAdvance(skills_t skill, uint64_t count)
 {
 	uint64_t currReqTries = vocation->getReqSkillTries(skill, skills[skill].level);
@@ -490,10 +486,6 @@ void Player::addSkillAdvance(skills_t skill, uint64_t count)
 		}
 	}
 
-	if (skill == SKILL_LEVEL) {
-		updateRerollPrice();
-	}
-
 	skills[skill].tries += count;
 
 	uint32_t newPercent;
@@ -509,7 +501,6 @@ void Player::addSkillAdvance(skills_t skill, uint64_t count)
 	}
 
 	if (sendUpdateSkills) {
-		sendStats();
 		sendSkills();
 	}
 }
@@ -664,14 +655,17 @@ void Player::addStorageValue(const uint32_t key, const int32_t value, const bool
 	}
 
 	if (value != -1) {
+		int32_t oldValue;
+		getStorageValue(key, oldValue);
+
 		storageMap[key] = value;
 
 		if (!isLogin) {
-			int32_t oldValue;
-			getStorageValue(key, oldValue);
-
 			auto currentFrameTime = g_dispatcher.getDispatcherCycle();
-			g_events->eventOnStorageUpdate(this, key, value, oldValue, currentFrameTime);
+			if (lastQuestlogUpdate != currentFrameTime && g_game.quests.isQuestStorage(key, value, oldValue)) {
+				lastQuestlogUpdate = currentFrameTime;
+				sendTextMessage(MESSAGE_EVENT_ADVANCE, "Your questlog has been updated.");
+			}
 		}
 	} else {
 		storageMap.erase(key);
@@ -720,44 +714,34 @@ bool Player::canWalkthrough(const Creature* creature) const
 		return true;
 	}
 
-	const Monster* monster = creature->getMonster();
-	if (monster) {
-		if (!monster->isPet()) {
-			return false;
-		}
-
-		const Tile* creatureTile = monster->getTile();
-		return creatureTile && (creatureTile->hasFlag(TILESTATE_NOPVPZONE) || creatureTile->hasFlag(TILESTATE_PROTECTIONZONE));
-	}
-
 	const Player* player = creature->getPlayer();
-	if (player) {
-		const Tile* playerTile = player->getTile();
-		if (!playerTile || (!playerTile->hasFlag(TILESTATE_NOPVPZONE) && !playerTile->hasFlag(TILESTATE_PROTECTIONZONE) && player->getLevel() > static_cast<uint32_t>(g_config.getNumber(ConfigManager::PROTECTION_LEVEL)))) {
-			return false;
-		}
-
-		const Item* playerTileGround = playerTile->getGround();
-		if (!playerTileGround || !playerTileGround->hasWalkStack()) {
-			return false;
-		}
-
-		Player* thisPlayer = const_cast<Player*>(this);
-		if ((OTSYS_TIME() - lastWalkthroughAttempt) > 2000) {
-			thisPlayer->setLastWalkthroughAttempt(OTSYS_TIME());
-			return false;
-		}
-
-		if (creature->getPosition() != lastWalkthroughPosition) {
-			thisPlayer->setLastWalkthroughPosition(creature->getPosition());
-			return false;
-		}
-
-		thisPlayer->setLastWalkthroughPosition(creature->getPosition());
-		return true;
+	if (!player) {
+		return false;
 	}
 
-	return false;
+	const Tile* playerTile = player->getTile();
+	if (!playerTile || !playerTile->hasFlag(TILESTATE_PROTECTIONZONE)) {
+		return false;
+	}
+
+	const Item* playerTileGround = playerTile->getGround();
+	if (!playerTileGround || !playerTileGround->hasWalkStack()) {
+		return false;
+	}
+
+	Player* thisPlayer = const_cast<Player*>(this);
+	if ((OTSYS_TIME() - lastWalkthroughAttempt) > 2000) {
+		thisPlayer->setLastWalkthroughAttempt(OTSYS_TIME());
+		return false;
+	}
+
+	if (creature->getPosition() != lastWalkthroughPosition) {
+		thisPlayer->setLastWalkthroughPosition(creature->getPosition());
+		return false;
+	}
+
+	thisPlayer->setLastWalkthroughPosition(creature->getPosition());
+	return true;
 }
 
 bool Player::canWalkthroughEx(const Creature* creature) const
@@ -766,22 +750,13 @@ bool Player::canWalkthroughEx(const Creature* creature) const
 		return true;
 	}
 
-	const Monster* monster = creature->getMonster();
-	if (monster) {
-		if (!monster->isPet()) {
-			return false;
-		}
-		const Tile* creatureTile = monster->getTile();
-		return creatureTile && (creatureTile->hasFlag(TILESTATE_NOPVPZONE) || creatureTile->hasFlag(TILESTATE_PROTECTIONZONE));
-	}
-
 	const Player* player = creature->getPlayer();
-	if (player) {
-		const Tile* playerTile = player->getTile();
-		return playerTile && (playerTile->hasFlag(TILESTATE_NOPVPZONE) || playerTile->hasFlag(TILESTATE_PROTECTIONZONE) || player->getLevel() <= static_cast<uint32_t>(g_config.getNumber(ConfigManager::PROTECTION_LEVEL)));
+	if (!player) {
+		return false;
 	}
 
-	return false;
+	const Tile* playerTile = player->getTile();
+	return playerTile && playerTile->hasFlag(TILESTATE_PROTECTIONZONE);
 }
 
 void Player::onReceiveMail() const
@@ -790,91 +765,6 @@ void Player::onReceiveMail() const
 		sendTextMessage(MESSAGE_EVENT_ADVANCE, "New mail has arrived.");
 	}
 }
-
-Container* Player::setLootContainer(ObjectCategory_t category, Container* container, bool loading /* = false*/)
-{
-	Container* previousContainer = nullptr;
-	auto it = quickLootContainers.find(category);
-	if (it != quickLootContainers.end() && !loading) {
-		previousContainer = (*it).second;
-		uint32_t flags = previousContainer->getIntAttr(ITEM_ATTRIBUTE_QUICKLOOTCONTAINER);
-		flags &= ~(1 << category);
-		if (flags == 0) {
-			previousContainer->removeAttribute(ITEM_ATTRIBUTE_QUICKLOOTCONTAINER);
-		} else {
-			previousContainer->setIntAttr(ITEM_ATTRIBUTE_QUICKLOOTCONTAINER, flags);
-		}
-
-		previousContainer->decrementReferenceCounter();
-		quickLootContainers.erase(it);
-	}
-
-	if (container) {
-		previousContainer = container;
-		quickLootContainers[category] = container;
-
-		container->incrementReferenceCounter();
-		if (!loading) {
-			uint32_t flags = container->getIntAttr(ITEM_ATTRIBUTE_QUICKLOOTCONTAINER);
-			container->setIntAttr(ITEM_ATTRIBUTE_QUICKLOOTCONTAINER, flags | static_cast<uint32_t>(1 << category));
-		}
-	}
-
-	return previousContainer;
-}
-
-Container* Player::getLootContainer(ObjectCategory_t category) const
-{
-	if (category != OBJECTCATEGORY_DEFAULT && !isPremium()) {
-		category = OBJECTCATEGORY_DEFAULT;
-	}
-
-	auto it = quickLootContainers.find(category);
-	if (it != quickLootContainers.end()) {
-		return (*it).second;
-	}
-
-	if (category != OBJECTCATEGORY_DEFAULT) {
-		// firstly, fallback to default
-		return getLootContainer(OBJECTCATEGORY_DEFAULT);
-	}
-
-	return nullptr;
-}
-
-void Player::checkLootContainers(const Item* item)
-{
-	const Container* container = item->getContainer();
-	if (!container) {
-		return;
-	}
-
-	bool shouldSend = false;
-
-	auto it = quickLootContainers.begin();
-	while (it != quickLootContainers.end()) {
-		Container* lootContainer = (*it).second;
-
-		bool remove = false;
-		if (item->getHoldingPlayer() != this && (item == lootContainer || container->isHoldingItem(lootContainer))) {
-			remove = true;
-		}
-
-		if (remove) {
-			shouldSend = true;
-			it = quickLootContainers.erase(it);
-			lootContainer->decrementReferenceCounter();
-			lootContainer->removeAttribute(ITEM_ATTRIBUTE_QUICKLOOTCONTAINER);
-		} else {
-			++it;
-		}
-	}
-
-	if (shouldSend) {
-		sendLootContainers();
-	}
-}
-
 
 bool Player::isNearDepotBox() const
 {
@@ -894,17 +784,6 @@ bool Player::isNearDepotBox() const
 	return false;
 }
 
-DepotChest* Player::getDepotBox()
-{
-	DepotChest* depotBoxs = new DepotChest(ITEM_DEPOT);
-	depotBoxs->incrementReferenceCounter();
-	depotBoxs->setMaxDepotItems(getMaxDepotItems()); //check each depotID, if depot limit is 1000, so all depots have 17k items max, causes crash?? I think not
-	for (int32_t index = 1; index <= g_config.getNumber(ConfigManager::DEPOT_BOXES); ++index) {
-		depotBoxs->internalAddThing(getDepotChest((g_config.getNumber(ConfigManager::DEPOT_BOXES) + 1) - index, true));
-	}
-	return depotBoxs;
-}
-
 DepotChest* Player::getDepotChest(uint32_t depotId, bool autoCreate)
 {
 	auto it = depotChests.find(depotId);
@@ -916,18 +795,9 @@ DepotChest* Player::getDepotChest(uint32_t depotId, bool autoCreate)
 		return nullptr;
 	}
 
-	DepotChest* depotChest;
-
-	if (depotId > 0 && depotId < 18) {
-		depotChest = new DepotChest(ITEM_DEPOT_NULL + depotId);
-	} else if (depotId == 18) {
-		depotChest = new DepotChest(ITEM_DEPOT_XVIII);
-	} else {
-		depotChest = new DepotChest(ITEM_DEPOT);
-	}
-
+	DepotChest* depotChest = new DepotChest(ITEM_DEPOT);
 	depotChest->incrementReferenceCounter();
-	//depotChest->setMaxDepotItems(getMaxDepotItems()); why ?? my depot commit don't have this code, is possible add more items in depot with this
+	depotChest->setMaxDepotItems(getMaxDepotItems());
 	depotChests[depotId] = depotChest;
 	return depotChest;
 }
@@ -937,11 +807,6 @@ DepotLocker* Player::getDepotLocker(uint32_t depotId)
 	auto it = depotLockerMap.find(depotId);
 	if (it != depotLockerMap.end()) {
 		inbox->setParent(it->second);
-		for (uint8_t i = g_config.getNumber(ConfigManager::DEPOT_BOXES); i > 0; i--) {
-			if (DepotChest* depotBox = getDepotChest(i, false)) {
-				depotBox->setParent(it->second->getItemByIndex(0)->getContainer());
- 			}
-		}
 		return it->second;
 	}
 
@@ -949,63 +814,9 @@ DepotLocker* Player::getDepotLocker(uint32_t depotId)
 	depotLocker->setDepotId(depotId);
 	depotLocker->internalAddThing(Item::CreateItem(ITEM_MARKET));
 	depotLocker->internalAddThing(inbox);
-	Container* depotChest = Item::CreateItemAsContainer(ITEM_DEPOT, g_config.getNumber(ConfigManager::DEPOT_BOXES));
-	for (uint8_t i = g_config.getNumber(ConfigManager::DEPOT_BOXES); i > 0; i--) {
-		DepotChest* depotBox = getDepotChest(i, true);
-		depotChest->internalAddThing(depotBox);
-		depotBox->setParent(depotChest);
-	}
-	depotLocker->internalAddThing(Item::CreateItem(ITEM_SUPPLY_STASH));
-	depotLocker->internalAddThing(depotChest);
+	depotLocker->internalAddThing(getDepotChest(depotId, true));
 	depotLockerMap[depotId] = depotLocker;
 	return depotLocker;
-}
-
-RewardChest* Player::getRewardChest()
-{
-	if (rewardChest != nullptr) {
-		return rewardChest;
-	}
-
-	rewardChest = new RewardChest(ITEM_REWARD_CHEST);
-	return rewardChest;
-}
-
-Reward* Player::getReward(uint32_t rewardId, bool autoCreate)
-{
-	auto it = rewardMap.find(rewardId);
-	if (it != rewardMap.end()) {
-		return it->second;
-	}
-
-	if (!autoCreate) {
-		return nullptr;
-	}
-
-	uint32_t timestamp = static_cast<uint32_t>(OS_TIME(nullptr));
-	if (rewardId > (timestamp + 24*3600)) {
-		return nullptr;
-	}
-
-	Reward* reward = new Reward();
-	reward->incrementReferenceCounter();
-	reward->setIntAttr(ITEM_ATTRIBUTE_DATE, rewardId);
-	rewardMap[rewardId] = reward;
-
-	g_game.internalAddItem(getRewardChest(), reward, INDEX_WHEREEVER, FLAG_NOLIMIT);
-
-	return reward;
-}
-
-void Player::removeReward(uint32_t rewardId) {
-	rewardMap.erase(rewardId);
-}
-
-void Player::getRewardList(std::vector<uint32_t>& rewards) {
-	rewards.reserve(rewardMap.size());
-	for (auto& it : rewardMap) {
-		rewards.push_back(it.first);
-	}
 }
 
 void Player::sendCancelMessage(ReturnValue message) const
@@ -1019,20 +830,6 @@ void Player::sendStats()
 		client->sendStats();
 		lastStatsTrainingTime = getOfflineTrainingTime() / 60 / 1000;
 	}
-}
-
-bool Player::hasLostConnection()
-{
-	int64_t timeNow = OTSYS_TIME();
-
-	bool hasLostConnection = false;
-	if ((timeNow - lastPing) >= 5000) {
-		if (!client) {
-			hasLostConnection = true;
-		}
-	}
-	int64_t noPongTime = timeNow - lastPong;
-	return (hasLostConnection || noPongTime >= 7000);
 }
 
 void Player::sendPing()
@@ -1070,20 +867,6 @@ Item* Player::getWriteItem(uint32_t& windowTextId, uint16_t& maxWriteLen)
 	windowTextId = this->windowTextId;
 	maxWriteLen = this->maxWriteLen;
 	return writeItem;
-}
-
-void Player::inImbuing(Item* item)
-{
-	if (imbuing) {
-		imbuing->decrementReferenceCounter();
-	}
-
-	if (item) {
-		imbuing = item;
-		imbuing->incrementReferenceCounter();
-	} else {
-		imbuing = nullptr;
-	}
 }
 
 void Player::setWriteItem(Item* item, uint16_t maxWriteLen /*= 0*/)
@@ -1208,7 +991,7 @@ void Player::sendRemoveContainerItem(const Container* container, uint16_t slot)
 }
 
 void Player::onUpdateTileItem(const Tile* tile, const Position& pos, const Item* oldItem,
-							  const ItemType& oldType, const Item* newItem, const ItemType& newType)
+                              const ItemType& oldType, const Item* newItem, const ItemType& newType)
 {
 	Creature::onUpdateTileItem(tile, pos, oldItem, oldType, newItem, newType);
 
@@ -1224,7 +1007,7 @@ void Player::onUpdateTileItem(const Tile* tile, const Position& pos, const Item*
 }
 
 void Player::onRemoveTileItem(const Tile* tile, const Position& pos, const ItemType& iType,
-							  const Item* item)
+                              const Item* item)
 {
 	Creature::onRemoveTileItem(tile, pos, iType, item);
 
@@ -1238,28 +1021,20 @@ void Player::onRemoveTileItem(const Tile* tile, const Position& pos, const ItemT
 			}
 		}
 	}
-
-	checkLootContainers(item);
 }
 
 void Player::onCreatureAppear(Creature* creature, bool isLogin)
 {
 	Creature::onCreatureAppear(creature, isLogin);
-    
-	if (g_game.isExpertPvpEnabled()) {
-		g_game.updateSpectatorsPvp(this);
-		g_game.updateSpectatorsPvp(creature);
-	}
 
 	if (isLogin && creature == this) {
-		sendInventoryClientIds();
 		for (int32_t slot = CONST_SLOT_FIRST; slot <= CONST_SLOT_LAST; ++slot) {
 			Item* item = inventory[slot];
 			if (item) {
+				item->startDecaying();
 				g_moveEvents->onPlayerEquip(this, item, static_cast<slots_t>(slot), false);
 			}
 		}
-
 
 		for (Condition* condition : storedConditionList) {
 			addCondition(condition);
@@ -1277,16 +1052,10 @@ void Player::onCreatureAppear(Creature* creature, bool isLogin)
 			guild->addMember(this);
 		}
 
-		const Position& pos = getPosition();
-		Tile* playerTile = g_game.map.getTile(pos);
-		if (playerTile && playerTile->hasFlag(TILESTATE_PROTECTIONZONE) && isMounted()) {
-			toggleMount(!isMounted());
-		}
-
 		int32_t offlineTime;
 		if (getLastLogout() != 0) {
 			// Not counting more than 21 days to prevent overflow when multiplying with 1000 (for milliseconds).
-			offlineTime = std::min<int32_t>(OS_TIME(nullptr) - getLastLogout(), 86400 * 21);
+			offlineTime = std::min<int32_t>(time(nullptr) - getLastLogout(), 86400 * 21);
 		} else {
 			offlineTime = 0;
 		}
@@ -1300,10 +1069,6 @@ void Player::onCreatureAppear(Creature* creature, bool isLogin)
 
 		g_game.checkPlayersRecord();
 		IOLoginData::updateOnlineStatus(guid, true);
-		if (!logged){
-			sendLootContainers();
-			logged = true;
-		}
 	}
 }
 
@@ -1383,7 +1148,7 @@ void Player::onRemoveCreature(Creature* creature, bool isLogout)
 			loginPosition = getPosition();
 		}
 
-		lastLogout = OS_TIME(nullptr);
+		lastLogout = time(nullptr);
 
 		if (eventWalk != 0) {
 			setFollowCreature(nullptr);
@@ -1463,7 +1228,7 @@ void Player::onWalk(Direction& dir)
 }
 
 void Player::onCreatureMove(Creature* creature, const Tile* newTile, const Position& newPos,
-							const Tile* oldTile, const Position& oldPos, bool teleport)
+                            const Tile* oldTile, const Position& oldPos, bool teleport)
 {
 	Creature::onCreatureMove(creature, newTile, newPos, oldTile, oldPos, teleport);
 
@@ -1546,8 +1311,6 @@ void Player::onRemoveContainerItem(const Container* container, const Item* item)
 			}
 		}
 	}
-
-	checkLootContainers(item);
 }
 
 void Player::onCloseContainer(const Container* container)
@@ -1602,8 +1365,6 @@ void Player::onRemoveInventoryItem(Item* item)
 			}
 		}
 	}
-
-	checkLootContainers(item);
 }
 
 void Player::checkTradeState(const Item* item)
@@ -1658,48 +1419,9 @@ void Player::setNextActionTask(SchedulerTask* task)
 		actionTaskEvent = 0;
 	}
 
-	if (!inEventMovePush)
-		cancelPush();
-
 	if (task) {
 		actionTaskEvent = g_scheduler.addEvent(task);
-		//resetIdleTime();
-	}
-}
-
-void Player::setNextActionPushTask(SchedulerTask* task)
-{
-	if (actionTaskEventPush != 0) {
-		g_scheduler.stopEvent(actionTaskEventPush);
-		actionTaskEventPush = 0;
-	}
-
-	if (task) {
-		actionTaskEventPush = g_scheduler.addEvent(task);
-	}
-}
-
-void Player::cancelPush()
-{
-	if (actionTaskEventPush !=  0) {
-		g_scheduler.stopEvent(actionTaskEventPush);
-		actionTaskEventPush = 0;
-		inEventMovePush = false;
-	}	
-}
-
-void Player::setNextPotionActionTask(SchedulerTask* task)
-{
-	if (actionPotionTaskEvent != 0) {
-		g_scheduler.stopEvent(actionPotionTaskEvent);
-		actionPotionTaskEvent = 0;
-	}
-
-	cancelPush();
-
-	if (task) {
-		actionPotionTaskEvent = g_scheduler.addEvent(task);
-		//resetIdleTime();
+		resetIdleTime();
 	}
 }
 
@@ -1708,23 +1430,11 @@ uint32_t Player::getNextActionTime() const
 	return std::max<int64_t>(SCHEDULER_MINTICKS, nextAction - OTSYS_TIME());
 }
 
-uint32_t Player::getNextPotionActionTime() const
-{
-	return std::max<int64_t>(SCHEDULER_MINTICKS, nextPotionAction - OTSYS_TIME());
-}
-
 void Player::onThink(uint32_t interval)
 {
 	Creature::onThink(interval);
 
 	sendPing();
-
-	if (deathTime > 0) {
-		deathTime -= interval;
-		if (deathTime <= 0) {
-			kickPlayer(true);
-		}
-	}
 
 	MessageBufferTicks += interval;
 	if (MessageBufferTicks >= 1500) {
@@ -1732,83 +1442,25 @@ void Player::onThink(uint32_t interval)
 		addMessageBuffer();
 	}
 
-	int32_t ninterval = static_cast<int32_t>(interval);
-	Player* thisPlayer = const_cast<Player*>(this);
-	if (thisPlayer->getProtectionCombatStatus() == COMBAT_STATUS_IN_CHECK) {
-		if (!thisPlayer->hasLostConnection()) {
-			thisPlayer->updateProtectionCombatStatus(COMBAT_STATUS_NONE);
-			thisPlayer->updateProtectionCombat(-getProtectionCombat());
-		} else {
-			thisPlayer->updateProtectionCombat(-ninterval);
-			if (thisPlayer->getProtectionCombat() <= 0) {
-				thisPlayer->updateProtectionCombatStatus(COMBAT_STATUS_CHECKED);
-				int32_t timelogout = 30000;
-				// mages
-				if (vocation->getId() == 1 || vocation->getId() == 2 ||  vocation->getId() == 5  ||  vocation->getId() == 6 ) {
-					timelogout = 10000;
-				// paladins
-				} else if (vocation->getId() == 3 || vocation->getId() == 7) {
-					timelogout = 20000;
-				}
-				thisPlayer->updateProtectionCombat(timelogout);
-			}
+	if (!getTile()->hasFlag(TILESTATE_NOLOGOUT) && !isAccessPlayer()) {
+		idleTime += interval;
+		const int32_t kickAfterMinutes = g_config.getNumber(ConfigManager::KICK_AFTER_MINUTES);
+		if (idleTime > (kickAfterMinutes * 60000) + 60000) {
+			kickPlayer(true);
+		} else if (client && idleTime == 60000 * kickAfterMinutes) {
+			std::ostringstream ss;
+			ss << "You have been idle for " << kickAfterMinutes << " minutes. You will be disconnected in one minute if you are still idle then.";
+			client->sendTextMessage(TextMessage(MESSAGE_STATUS_WARNING, ss.str()));
 		}
-	// checando para deslogar
-	} else if (thisPlayer->getProtectionCombatStatus() == COMBAT_STATUS_CHECKED) {
-		if (!thisPlayer->hasLostConnection()) {
-			thisPlayer->updateProtectionCombatStatus(COMBAT_STATUS_NONE);
-			thisPlayer->updateProtectionCombat(-getProtectionCombat());
-		} else {
-			thisPlayer->updateProtectionCombat(-ninterval);
-			if (getProtectionCombat() <= 0) {
-				thisPlayer->updateProtectionCombatStatus(COMBAT_STATUS_NONE);
-				// deslogando
-				kickPlayer(true);
-			}
-		}
-	} else if (!thisPlayer->hasLostConnection() && thisPlayer->getProtectionCombatStatus() != COMBAT_STATUS_NONE) {
-		thisPlayer->updateProtectionCombatStatus(COMBAT_STATUS_NONE);
-		thisPlayer->updateProtectionCombat(-getProtectionCombat());
 	}
-
- 	int32_t exerciseDummy;
- 	getStorageValue(37, exerciseDummy);
-
- 	if (exerciseDummy != 1) {
-		if (!getTile()->hasFlag(TILESTATE_NOLOGOUT) && !isAccessPlayer()) {
-			idleTime += interval;
-			const int32_t kickAfterMinutes = g_config.getNumber(ConfigManager::KICK_AFTER_MINUTES);
-			if (idleTime > (kickAfterMinutes * 60000) + 60000) {
-				kickPlayer(true);
-			} else if (client && idleTime == 60000 * kickAfterMinutes) {
-				std::ostringstream ss;
-				ss << "You have been idle for " << kickAfterMinutes << " minutes. You will be disconnected in one minute if you are still idle then.";
-				client->sendTextMessage(TextMessage(MESSAGE_STATUS_WARNING, ss.str()));
-			}
-		}
- 	}
 
 	if (g_game.getWorldType() != WORLD_TYPE_PVP_ENFORCED) {
 		checkSkullTicks(interval);
 	}
 
-	if (getZone() == ZONE_PROTECTION) {
-		lastTimeStamina += interval / 1000;
-		if (lastTimeStamina >= 120) {
-			lastTimeStamina = 0;
-			staminaMinutes = std::min<uint16_t>(2520, staminaMinutes + 1);
-		}
-	} else if (lastTimeStamina > 0) {
-		lastTimeStamina = 0;
-	}
-
 	addOfflineTrainingTime(interval);
 	if (lastStatsTrainingTime != getOfflineTrainingTime() / 60 / 1000) {
 		sendStats();
-	}
-	
-	if (g_game.isExpertPvpEnabled()) {
-		g_game.updateSpectatorsPvp(const_cast<Player*>(this));
 	}
 }
 
@@ -1927,7 +1579,6 @@ void Player::addManaSpent(uint64_t amount)
 
 	if (sendUpdateStats) {
 		sendStats();
-		sendSkills();
 	}
 }
 
@@ -1943,6 +1594,12 @@ void Player::addExperience(Creature* source, uint64_t exp, bool sendText/* = fal
 		return;
 	}
 
+	Monster* monster = source ? source->getMonster() : nullptr; //pota
+	if (monster) {
+		double factor = (g_config.getDouble(ConfigManager::MONSTERLEVEL_BONUSEXP) * monster->getLevel());
+		exp += (exp * factor);
+	}
+
 	g_events->eventPlayerOnGainExperience(this, source, exp, rawExp);
 	if (exp == 0) {
 		return;
@@ -1951,26 +1608,7 @@ void Player::addExperience(Creature* source, uint64_t exp, bool sendText/* = fal
 	experience += exp;
 
 	if (sendText) {
-		std::string expString = std::to_string(exp) + (exp != 1 ? " experience points" : " experience point");
-		bool hasparenteses = false;
-		if (hasActivePreyBonus(BONUS_XP_BONUS, source)) {
-			hasparenteses = true;
-			expString += " (active prey bonus";
-		}
-
-		if (isVip()) {
-			if (!hasparenteses) {
-				hasparenteses = true;
-				expString += " (VIP Boost Active";
-			} else {
-				expString += " and VIP Boost";
-			}
-		}
-
-		if (hasparenteses) {
-			expString += ")";
-		}
-		expString += ".";
+		std::string expString = std::to_string(exp) + (exp != 1 ? " experience points." : " experience point.");
 
 		TextMessage message(MESSAGE_EXPERIENCE, "You gained " + expString);
 		message.position = position;
@@ -1978,13 +1616,13 @@ void Player::addExperience(Creature* source, uint64_t exp, bool sendText/* = fal
 		message.primary.color = TEXTCOLOR_WHITE_EXP;
 		sendTextMessage(message);
 
-		SpectatorHashSet spectators;
-		g_game.map.getSpectators(spectators, position, false, true);
-		spectators.erase(this);
-		if (!spectators.empty()) {
+		SpectatorVec list;
+		g_game.map.getSpectators(list, position, false, true);
+		list.erase(this);
+		if (!list.empty()) {
 			message.type = MESSAGE_EXPERIENCE_OTHERS;
 			message.text = getName() + " gained " + expString;
-			for (Creature* spectator : spectators) {
+			for (Creature* spectator : list) {
 				spectator->getPlayer()->sendTextMessage(message);
 			}
 		}
@@ -2008,12 +1646,12 @@ void Player::addExperience(Creature* source, uint64_t exp, bool sendText/* = fal
 	}
 
 	if (prevLevel != level) {
-		health = getMaxHealth();
-		mana = getMaxMana();
+		health = healthMax;
+		mana = manaMax;
 
 		updateBaseSpeed();
 		setBaseSpeed(getBaseSpeed());
-		//setBaseXpGain(g_game.getExperienceStage(level)*100);
+
 		g_game.changeSpeed(this, 0);
 		g_game.addCreatureHealth(this);
 
@@ -2061,13 +1699,13 @@ void Player::removeExperience(uint64_t exp, bool sendText/* = false*/)
 		message.primary.color = TEXTCOLOR_RED;
 		sendTextMessage(message);
 
-		SpectatorHashSet spectators;
-		g_game.map.getSpectators(spectators, position, false, true);
-		spectators.erase(this);
-		if (!spectators.empty()) {
+		SpectatorVec list;
+		g_game.map.getSpectators(list, position, false, true);
+		list.erase(this);
+		if (!list.empty()) {
 			message.type = MESSAGE_EXPERIENCE_OTHERS;
 			message.text = getName() + " lost " + expString;
-			for (Creature* spectator : spectators) {
+			for (Creature* spectator : list) {
 				spectator->getPlayer()->sendTextMessage(message);
 			}
 		}
@@ -2085,8 +1723,8 @@ void Player::removeExperience(uint64_t exp, bool sendText/* = false*/)
 	}
 
 	if (oldLevel != level) {
-		health = getMaxHealth();
-		mana = getMaxMana();
+		health = healthMax;
+		mana = manaMax;
 
 		updateBaseSpeed();
 		setBaseSpeed(getBaseSpeed());
@@ -2182,11 +1820,11 @@ bool Player::hasShield() const
 }
 
 BlockType_t Player::blockHit(Creature* attacker, CombatType_t combatType, int32_t& damage,
-							 bool checkDefense /* = false*/, bool checkArmor /* = false*/, bool field /* = false*/)
+                             bool checkDefense /* = false*/, bool checkArmor /* = false*/, bool field /* = false*/)
 {
 	BlockType_t blockType = Creature::blockHit(attacker, combatType, damage, checkDefense, checkArmor, field);
 
-	if (!g_game.isExpertPvpEnabled() && attacker) {
+	if (attacker) {
 		sendCreatureSquare(attacker, SQ_COLOR_BLACK);
 	}
 
@@ -2228,34 +1866,6 @@ BlockType_t Player::blockHit(Creature* attacker, CombatType_t combatType, int32_
 						}
 					}
 				}
-				if (attacker) {
-					const int16_t& reflectPercent = it.abilities->reflectPercent[combatTypeToIndex(combatType)];
-					if (reflectPercent != 0) {
-						CombatParams params;
-						params.combatType = combatType;
-						params.impactEffect = CONST_ME_MAGIC_BLUE;
-
-						CombatDamage reflectDamage;
-						reflectDamage.origin = ORIGIN_SPELL;
-						reflectDamage.primary.type = combatType;
-						reflectDamage.primary.value = std::round(-damage * (reflectPercent / 100.));
-
-						Combat::doTargetCombat(this, attacker, reflectDamage, params);
-					}
-				}
-			}
-
-			uint8_t slots = Item::items[item->getID()].imbuingSlots;
-			for (uint8_t i = 0; i < slots; i++) {
-				uint32_t info = item->getImbuement(i);
-				if (info >> 8) {
-					Imbuement* ib = g_imbuements.getImbuement(info & 0xFF);
-					const int16_t& absorbPercent2 = ib->absorbPercent[combatTypeToIndex(combatType)];
-
-					if (absorbPercent2 != 0) {
-						damage -= std::ceil(damage * (absorbPercent2 / 100.));
-					}
-				}
 			}
 		}
 
@@ -2282,36 +1892,26 @@ void Player::death(Creature* lastHitCreature)
 
 	if (skillLoss) {
 		uint8_t unfairFightReduction = 100;
-		int playerDmg = 0;
-		int othersDmg = 0;
-		uint32_t sumLevels = 0;
-		// 5*60000
-		uint32_t inFightTicks = 5 * (g_config.getNumber(ConfigManager::PZ_LOCKED));
-		for (const auto& it : damageMap) {
-			CountBlock_t cb = it.second;
-			if ((OTSYS_TIME() - cb.ticks) <= inFightTicks) {
-				Player* damageDealer = g_game.getPlayerByID(it.first);
-				if (damageDealer) {
-					playerDmg += cb.total;
-					sumLevels += damageDealer->getLevel();
-				} else{
-					othersDmg += cb.total;
+		bool lastHitPlayer = Player::lastHitIsPlayer(lastHitCreature);
+
+		if (lastHitPlayer) {
+			uint32_t sumLevels = 0;
+			uint32_t inFightTicks = g_config.getNumber(ConfigManager::PZ_LOCKED);
+			for (const auto& it : damageMap) {
+				CountBlock_t cb = it.second;
+				if ((OTSYS_TIME() - cb.ticks) <= inFightTicks) {
+					Player* damageDealer = g_game.getPlayerByID(it.first);
+					if (damageDealer) {
+						sumLevels += damageDealer->getLevel();
+					}
 				}
 			}
-		}
 
-		bool pvpDeath = false;
-		bool deathPlayer = false;
-		if (playerDmg > 0 || othersDmg > 0) {
-			pvpDeath = (g_game.getWorldType() != WORLD_TYPE_RETRO_OPEN_PVP && (Player::lastHitIsPlayer(lastHitCreature) || playerDmg / (playerDmg + static_cast<double>(othersDmg)) >= 0.05));
-			deathPlayer = (Player::lastHitIsPlayer(lastHitCreature) || playerDmg / (playerDmg + static_cast<double>(othersDmg)) >= 0.05);
+			if (sumLevels > level) {
+				double reduce = level / static_cast<double>(sumLevels);
+				unfairFightReduction = std::max<uint8_t>(20, std::floor((reduce * 100) + 0.5));
+			}
 		}
-
-		if (pvpDeath && sumLevels > level) {
-			double reduce = level / static_cast<double>(sumLevels);
-			unfairFightReduction = std::max<uint8_t>(20, std::floor((reduce * 100) + 0.5));
-		}
-
 
 		//Magic level loss
 		uint64_t sumMana = 0;
@@ -2324,19 +1924,7 @@ void Player::death(Creature* lastHitCreature)
 
 		sumMana += manaSpent;
 
-		double percentCharm = 1.0;
-		if (lastHitCreature) {
-			Monster* tmpMonster = lastHitCreature->getMonster();
-			if (tmpMonster && tmpMonster->getRaceId() > 0 && getCurrentCreature(12) == tmpMonster->getRaceId()) {
-				percentCharm = 0.7;
-			}
-		}
-
-		if (g_game.getWorldType() == WORLD_TYPE_RETRO_OPEN_PVP && getSkull() == SKULL_WHITE) {
-			setSkull(SKULL_NONE);
-		}
-
-		double deathLossPercent = getLostPercent() * (unfairFightReduction / 100.) * percentCharm;
+		double deathLossPercent = getLostPercent() * (unfairFightReduction / 100.);
 
 		lostMana = static_cast<uint64_t>(sumMana * deathLossPercent);
 
@@ -2385,12 +1973,6 @@ void Player::death(Creature* lastHitCreature)
 
 		//Level loss
 		uint64_t expLoss = static_cast<uint64_t>(experience * deathLossPercent);
-		// fazer o calculo de 1 level aqui
-		if (deathPlayer) {
-			uint64_t expLevel = Player::getExpForLevel(level - 1);
-			expLoss = experience - expLevel;
-		}
-
 		g_events->eventPlayerOnLoseExperience(this, expLoss);
 
 		if (expLoss != 0) {
@@ -2422,20 +2004,29 @@ void Player::death(Creature* lastHitCreature)
 			}
 		}
 
-		if (pvpDeath && hasBlessing(TWIST_OF_FATE)) {
-			removeBlessing(TWIST_OF_FATE, 1);
-		} else {
-			for (int i = BLESS_PVE_FIRST; i <= BLESS_LAST; i++) {
-				if (hasBlessing(i))
-					removeBlessing(i, 1);
+		std::bitset<6> bitset(blessings);
+		if (bitset[5]) {
+			if (lastHitPlayer) {
+				bitset.reset(5);
+				blessings = bitset.to_ulong();
+			} else {
+				blessings = 32;
 			}
+		} else {
+			blessings = 0;
 		}
 
 		sendStats();
 		sendSkills();
-		sendBlessStatus();
 		sendReLoginWindow(unfairFightReduction);
 
+		if (getSkull() == SKULL_BLACK) {
+			health = 40;
+			mana = 0;
+		} else {
+			health = healthMax;
+			mana = manaMax;
+		}
 
 		auto it = conditions.begin(), end = conditions.end();
 		while (it != end) {
@@ -2450,18 +2041,8 @@ void Player::death(Creature* lastHitCreature)
 				++it;
 			}
 		}
-
-		if (getSkull() == SKULL_BLACK) {
-			health = 40;
-			mana = 0;
-		} else {
-			health = healthMax;
-			mana = manaMax;
-		}
-
-
 	} else {
-		setSkillLoss(true);
+		setLossSkill(true);
 
 		auto it = conditions.begin(), end = conditions.end();
 		while (it != end) {
@@ -2502,11 +2083,7 @@ Item* Player::getCorpse(Creature* lastHitCreature, Creature* mostDamageCreature)
 	if (corpse && corpse->getContainer()) {
 		std::ostringstream ss;
 		if (lastHitCreature) {
-			ss << "You recognize " << getNameDescription() << ". " << (getSex() == PLAYERSEX_FEMALE ? "She" : "He") << " was killed by " << lastHitCreature->getNameDescription();
-			if (mostDamageCreature && mostDamageCreature != lastHitCreature) {
-				ss << " and " << mostDamageCreature->getNameDescription();
-			}
-			ss << '.';
+			ss << "You recognize " << getNameDescription() << ". " << (getSex() == PLAYERSEX_FEMALE ? "She" : "He") << " was killed by " << lastHitCreature->getNameDescription() << '.';
 		} else {
 			ss << "You recognize " << getNameDescription() << '.';
 		}
@@ -2524,7 +2101,6 @@ void Player::addInFightTicks(bool pzlock /*= false*/)
 
 	if (pzlock) {
 		pzLocked = true;
-		sendIcons();
 	}
 
 	Condition* condition = Condition::createCondition(CONDITIONID_DEFAULT, CONDITION_INFIGHT, g_config.getNumber(ConfigManager::PZ_LOCKED), 0);
@@ -2591,6 +2167,11 @@ bool Player::removeVIP(uint32_t vipGuid)
 
 bool Player::addVIP(uint32_t vipGuid, const std::string& vipName, VipStatus_t status)
 {
+	if (guid == vipGuid) {
+		sendTextMessage(MESSAGE_STATUS_SMALL, "You cannot add yourself.");
+		return false;
+	}
+
 	if (VIPList.size() >= getMaxVIPEntries() || VIPList.size() == 200) { // max number of buddies is 200 in 9.53
 		sendTextMessage(MESSAGE_STATUS_SMALL, "You cannot add more buddies.");
 		return false;
@@ -2611,6 +2192,10 @@ bool Player::addVIP(uint32_t vipGuid, const std::string& vipName, VipStatus_t st
 
 bool Player::addVIPInternal(uint32_t vipGuid)
 {
+	if (guid == vipGuid) {
+		return false;
+	}
+
 	if (VIPList.size() >= getMaxVIPEntries() || VIPList.size() == 200) { // max number of buddies is 200 in 9.53
 		return false;
 	}
@@ -2693,11 +2278,10 @@ ReturnValue Player::queryAdd(int32_t index, const Thing& thing, uint32_t count, 
 
 	ReturnValue ret = RETURNVALUE_NOERROR;
 
-	const int32_t& slotPosition = item->getSlotPosition();
+	const int32_t& slotPosition = item->getSlotPosition(); //pota
 	if ((slotPosition & SLOTP_HEAD) || (slotPosition & SLOTP_NECKLACE) ||
-			(slotPosition & SLOTP_BACKPACK) || (slotPosition & SLOTP_ARMOR) ||
-			(slotPosition & SLOTP_LEGS) || (slotPosition & SLOTP_FEET) ||
-			(slotPosition & SLOTP_RING)) {
+	        (slotPosition & SLOTP_BACKPACK) || (slotPosition & SLOTP_ARMOR) ||
+	        (slotPosition & SLOTP_LEGS) || (slotPosition & SLOTP_FEET) || (slotPosition & SLOTP_ORDER) || (slotPosition & SLOTP_INFO) || 			(slotPosition & SLOTP_RING)) {
 		ret = RETURNVALUE_CANNOTBEDRESSED;
 	} else if (slotPosition & SLOTP_TWO_HAND) {
 		ret = RETURNVALUE_PUTTHISOBJECTINBOTHHANDS;
@@ -2741,9 +2325,7 @@ ReturnValue Player::queryAdd(int32_t index, const Thing& thing, uint32_t count, 
 		case CONST_SLOT_RIGHT: {
 			if (slotPosition & SLOTP_RIGHT) {
 				if (!g_config.getBoolean(ConfigManager::CLASSIC_EQUIPMENT_SLOTS)) {
-					
-					
-				if (item->getWeaponType() != WEAPON_SHIELD) {
+					if (item->getWeaponType() != WEAPON_SHIELD) {
 						ret = RETURNVALUE_CANNOTBEDRESSED;
 					} else {
 						const Item* leftItem = inventory[CONST_SLOT_LEFT];
@@ -2757,8 +2339,6 @@ ReturnValue Player::queryAdd(int32_t index, const Thing& thing, uint32_t count, 
 							ret = RETURNVALUE_NOERROR;
 						}
 					}
-
-
 				} else if (slotPosition & SLOTP_TWO_HAND) {
 					if (inventory[CONST_SLOT_LEFT] && inventory[CONST_SLOT_LEFT] != item) {
 						ret = RETURNVALUE_BOTHHANDSNEEDTOBEFREE;
@@ -2776,8 +2356,8 @@ ReturnValue Player::queryAdd(int32_t index, const Thing& thing, uint32_t count, 
 					} else if (leftType == WEAPON_SHIELD && type == WEAPON_SHIELD) {
 						ret = RETURNVALUE_CANONLYUSEONESHIELD;
 					} else if (leftType == WEAPON_NONE || type == WEAPON_NONE ||
-							   leftType == WEAPON_SHIELD || leftType == WEAPON_AMMO
-							   || type == WEAPON_SHIELD || type == WEAPON_AMMO) {
+					           leftType == WEAPON_SHIELD || leftType == WEAPON_AMMO
+					           || type == WEAPON_SHIELD || type == WEAPON_AMMO) {
 						ret = RETURNVALUE_NOERROR;
 					} else {
 						ret = RETURNVALUE_CANONLYUSEONEWEAPON;
@@ -2817,8 +2397,8 @@ ReturnValue Player::queryAdd(int32_t index, const Thing& thing, uint32_t count, 
 					} else if (rightType == WEAPON_SHIELD && type == WEAPON_SHIELD) {
 						ret = RETURNVALUE_CANONLYUSEONESHIELD;
 					} else if (rightType == WEAPON_NONE || type == WEAPON_NONE ||
-							   rightType == WEAPON_SHIELD || rightType == WEAPON_AMMO
-							   || type == WEAPON_SHIELD || type == WEAPON_AMMO) {
+					           rightType == WEAPON_SHIELD || rightType == WEAPON_AMMO
+					           || type == WEAPON_SHIELD || type == WEAPON_AMMO) {
 						ret = RETURNVALUE_NOERROR;
 					} else {
 						ret = RETURNVALUE_CANONLYUSEONEWEAPON;
@@ -2858,6 +2438,20 @@ ReturnValue Player::queryAdd(int32_t index, const Thing& thing, uint32_t count, 
 			break;
 		}
 
+		case CONST_SLOT_ORDER: { //pota
+			if (slotPosition & SLOTP_ORDER) {
+				ret = RETURNVALUE_NOERROR;
+			}
+			break;
+		}
+
+		case CONST_SLOT_INFO: { //pota
+			if (slotPosition & SLOTP_INFO) {
+				ret = RETURNVALUE_NOERROR;
+			}
+			break;
+		}
+
 		case CONST_SLOT_WHEREEVER:
 		case -1:
 			ret = RETURNVALUE_NOTENOUGHROOM;
@@ -2868,31 +2462,22 @@ ReturnValue Player::queryAdd(int32_t index, const Thing& thing, uint32_t count, 
 			break;
 	}
 
-	if (ret != RETURNVALUE_NOERROR && ret != RETURNVALUE_NOTENOUGHROOM) {
-		return ret;
-	}
-
-	//check if enough capacity
-	if (!hasCapacity(item, count)) {
-		return RETURNVALUE_NOTENOUGHCAPACITY;
-	}
-
-	ret = g_moveEvents->onPlayerEquip(const_cast<Player*>(this), const_cast<Item*>(item), static_cast<slots_t>(index), true);
-	if (ret != RETURNVALUE_NOERROR) {
-		return ret;
-	}
-
-	//need an exchange with source? (destination item is swapped with currently moved item)
-	const Item* inventoryItem = getInventoryItem(static_cast<slots_t>(index));
-	if (inventoryItem && (!inventoryItem->isStackable() || inventoryItem->getID() != item->getID())) {
-		const Cylinder* cylinder = item->getTopParent();
-		if (cylinder && (dynamic_cast<const DepotChest*>(cylinder) || dynamic_cast<const Player*>(cylinder))) {
+	if (ret == RETURNVALUE_NOERROR || ret == RETURNVALUE_NOTENOUGHROOM) {
+		//need an exchange with source?
+		const Item* inventoryItem = getInventoryItem(static_cast<slots_t>(index));
+		if (inventoryItem && (!inventoryItem->isStackable() || inventoryItem->getID() != item->getID())) {
 			return RETURNVALUE_NEEDEXCHANGE;
 		}
 
-		return RETURNVALUE_NOTENOUGHROOM;
-	}
+		//check if enough capacity
+		if (!hasCapacity(item, count)) {
+			return RETURNVALUE_NOTENOUGHCAPACITY;
+		}
 
+		if (!g_moveEvents->onPlayerEquip(const_cast<Player*>(this), const_cast<Item*>(item), static_cast<slots_t>(index), true)) {
+			return RETURNVALUE_CANNOTBEDRESSED;
+		}
+	}
 	return ret;
 }
 
@@ -3011,7 +2596,7 @@ Cylinder* Player::queryDestination(int32_t& index, const Thing& thing, Item** de
 
 		std::vector<Container*> containers;
 
-		for (uint32_t slotIndex = CONST_SLOT_FIRST; slotIndex <= CONST_SLOT_AMMO; ++slotIndex) {
+		for (uint32_t slotIndex = CONST_SLOT_FIRST; slotIndex <= CONST_SLOT_LAST; ++slotIndex) {
 			Item* inventoryItem = inventory[slotIndex];
 			if (inventoryItem) {
 				if (inventoryItem == tradeItem) {
@@ -3345,77 +2930,6 @@ std::map<uint32_t, uint32_t>& Player::getAllItemTypeCount(std::map<uint32_t, uin
 	return countMap;
 }
 
-Item* Player::getItemByClientId(uint16_t clientId) const
-{
-	for (int32_t i = CONST_SLOT_FIRST; i <= CONST_SLOT_LAST; i++) {
-		Item* item = inventory[i];
-		if (!item) {
-			continue;
-		}
-
-		if (item->getClientID() == clientId) {
-			return item;
-		}
-
-		if (Container* container = item->getContainer()) {
-			for (ContainerIterator it = container->iterator(); it.hasNext(); it.advance()) {
-				if ((*it)->getClientID() == clientId) {
-					return (*it);
-				}
-			}
-		}
-	}
-	return nullptr;
-}
-
-std::map<uint16_t, uint16_t> Player::getInventoryClientIds() const
-{
-	std::map<uint16_t, uint16_t> itemMap;
-	for (int32_t i = CONST_SLOT_FIRST; i <= CONST_SLOT_LAST; i++) {
-		Item* item = inventory[i];
-		if (!item) {
-			continue;
-		}
-
-		auto rootSearch = itemMap.find(item->getClientID());
-		if (rootSearch != itemMap.end()) {
-			itemMap[item->getClientID()] = itemMap[item->getClientID()] + Item::countByType(item, -1);
-		} else {
-			itemMap.emplace(item->getClientID(), Item::countByType(item, -1));
-		}
-
-		const ItemType& itemType = Item::items[item->getID()];
-		if (itemType.transformEquipTo) {
-			itemMap.emplace(Item::items[itemType.transformEquipTo].clientId, 0);
-		}
-
-		if (itemType.transformDeEquipTo) {
-			itemMap.emplace(Item::items[itemType.transformDeEquipTo].clientId, 0);
-		}
-
-		if (Container* container = item->getContainer()) {
-			for (ContainerIterator it = container->iterator(); it.hasNext(); it.advance()) {
-				auto containerSearch = itemMap.find((*it)->getClientID());
-				if (containerSearch != itemMap.end()) {
-					itemMap[(*it)->getClientID()] = itemMap[(*it)->getClientID()] + Item::countByType(*it, -1);
-				} else {
-					itemMap.emplace((*it)->getClientID(), Item::countByType(*it, -1));
-				}
-
-				const ItemType& itItemType = Item::items[(*it)->getID()];
-				if (itItemType.transformEquipTo) {
-					itemMap.emplace(Item::items[itItemType.transformEquipTo].clientId, 0);
-				}
-
-				if (itItemType.transformDeEquipTo) {
-					itemMap.emplace(Item::items[itItemType.transformDeEquipTo].clientId, 0);
-				}
-			}
-		}
-	}
-	return itemMap;
-}
-
 Thing* Player::getThing(size_t index) const
 {
 	if (index >= CONST_SLOT_FIRST && index <= CONST_SLOT_LAST) {
@@ -3441,14 +2955,13 @@ void Player::postAddNotification(Thing* thing, const Cylinder* oldParent, int32_
 		assert(i ? i->getContainer() != nullptr : true);
 
 		if (i) {
-		// 	requireListUpdate = i->getContainer()->getHoldingPlayer() != this;
-		// } else {
-		// 	requireListUpdate = oldParent != this;
+			requireListUpdate = i->getContainer()->getHoldingPlayer() != this;
+		} else {
+			requireListUpdate = oldParent != this;
 		}
 
 		updateInventoryWeight();
 		updateItemsLight();
-		sendInventoryClientIds();
 		sendStats();
 	}
 
@@ -3457,7 +2970,7 @@ void Player::postAddNotification(Thing* thing, const Cylinder* oldParent, int32_
 			onSendContainer(container);
 		}
 
-		if (client && shopOwner && requireListUpdate) {
+		if (shopOwner && requireListUpdate) {
 			updateSaleShopList(item);
 		}
 	} else if (const Creature* creature = thing->getCreature()) {
@@ -3496,21 +3009,18 @@ void Player::postRemoveNotification(Thing* thing, const Cylinder* newParent, int
 		assert(i ? i->getContainer() != nullptr : true);
 
 		if (i) {
-		// 	requireListUpdate = i->getContainer()->getHoldingPlayer() != this;
-		// } else {
-		// 	requireListUpdate = newParent != this;
+			requireListUpdate = i->getContainer()->getHoldingPlayer() != this;
+		} else {
+			requireListUpdate = newParent != this;
 		}
 
 		updateInventoryWeight();
 		updateItemsLight();
-		sendInventoryClientIds();
 		sendStats();
 	}
 
 	if (const Item* item = thing->getItem()) {
 		if (const Container* container = item->getContainer()) {
-			checkLootContainers(container);
-
 			if (container->isRemoved() || !Position::areInRange<1, 1, 0>(getPosition(), container->getPosition())) {
 				autoCloseContainers(container);
 			} else if (container->getTopParent() == this) {
@@ -3529,14 +3039,6 @@ void Player::postRemoveNotification(Thing* thing, const Cylinder* newParent, int
 					if (!isOwner) {
 						autoCloseContainers(container);
 					}
-					
-					} else if (const Inbox* inboxContainer = dynamic_cast<const Inbox*>(topContainer)) {
-					if (inboxContainer == inbox) {
-						onSendContainer(container);
-					} else {
-						autoCloseContainers(container);
-					}
-					
 				} else {
 					onSendContainer(container);
 				}
@@ -3569,15 +3071,11 @@ bool Player::updateSaleShopList(const Item* item)
 		}
 	}
 
-	if (updatingSaleItemList) {
-		return true;
+	if (client) {
+		client->sendSaleItemList(shopItemList);
 	}
-	g_dispatcher.addTask(createTask(std::bind(&Game::playerSendSaleItemList, &g_game, getID())));
-
-	updatingSaleItemList = true;
 	return true;
 }
-
 
 bool Player::hasShopItemForSale(uint32_t itemId, uint8_t subType) const
 {
@@ -3600,7 +3098,7 @@ void Player::internalAddThing(uint32_t index, Thing* thing)
 	}
 
 	//index == 0 means we should equip this item at the most appropiate slot (no action required here)
-	if (index > 0 && index < 12) {
+	if (index > 0 && index < 13) {
 		if (inventory[index]) {
 			return;
 		}
@@ -3631,7 +3129,7 @@ bool Player::setAttackedCreature(Creature* creature)
 		return false;
 	}
 
-	if (chaseMode && creature) {
+	if (chaseMode == CHASEMODE_FOLLOW && creature) {
 		if (followCreature != creature) {
 			//chase opponent
 			setFollowCreature(creature);
@@ -3682,26 +3180,19 @@ void Player::doAttacking(uint32_t)
 
 		Item* tool = getWeapon();
 		const Weapon* weapon = g_weapons->getWeapon(tool);
-		uint32_t delay = getAttackSpeed();
-		bool classicSpeed = g_config.getBoolean(ConfigManager::CLASSIC_ATTACK_SPEED);
-
 		if (weapon) {
 			if (!weapon->interruptSwing()) {
 				result = weapon->useWeapon(this, tool, attackedCreature);
-			} else if (!classicSpeed && !canDoAction()) {
-				delay = getNextActionTime();
+			} else if (!canDoAction()) {
+				uint32_t delay = getNextActionTime();
+				SchedulerTask* task = createSchedulerTask(delay, std::bind(&Game::checkCreatureAttack,
+				                      &g_game, getID()));
+				setNextActionTask(task);
 			} else {
 				result = weapon->useWeapon(this, tool, attackedCreature);
 			}
 		} else {
 			result = Weapon::useFist(this, attackedCreature);
-		}
-
-		SchedulerTask* task = createSchedulerTask(std::max<uint32_t>(SCHEDULER_MINTICKS, delay), std::bind(&Game::checkCreatureAttack, &g_game, getID()));
-		if (!classicSpeed) {
-			setNextActionTask(task);
-		} else {
-			g_scheduler.addEvent(task);
 		}
 
 		if (result) {
@@ -3728,13 +3219,13 @@ void Player::onFollowCreature(const Creature* creature)
 	}
 }
 
-void Player::setChaseMode(bool mode)
+void Player::setChaseMode(chaseMode_t mode)
 {
-	bool prevChaseMode = chaseMode;
+	chaseMode_t prevChaseMode = chaseMode;
 	chaseMode = mode;
 
 	if (prevChaseMode != chaseMode) {
-		if (chaseMode) {
+		if (chaseMode == CHASEMODE_FOLLOW) {
 			if (!followCreature && attackedCreature) {
 				//chase opponent
 				setFollowCreature(attackedCreature);
@@ -3765,25 +3256,27 @@ void Player::stopWalk()
 	cancelNextWalk = true;
 }
 
-LightInfo Player::getCreatureLight() const
+void Player::getCreatureLight(LightInfo& light) const
 {
 	if (internalLight.level > itemsLight.level) {
-		return internalLight;
+		light = internalLight;
+	} else {
+		light = itemsLight;
 	}
-	return itemsLight;
 }
 
 void Player::updateItemsLight(bool internal /*=false*/)
 {
 	LightInfo maxLight;
+	LightInfo curLight;
 
 	for (int32_t i = CONST_SLOT_FIRST; i <= CONST_SLOT_LAST; ++i) {
 		Item* item = inventory[i];
 		if (item) {
-			LightInfo curLight = item->getLightInfo();
+			item->getLight(curLight);
 
 			if (curLight.level > maxLight.level) {
-				maxLight = std::move(curLight);
+				maxLight = curLight;
 			}
 		}
 	}
@@ -3855,12 +3348,7 @@ void Player::onEndCondition(ConditionType_t type)
 	if (type == CONDITION_INFIGHT) {
 		onIdleStatus();
 		pzLocked = false;
-		setPvpSituation(false);
 		clearAttacked();
-		
-		if (g_game.isExpertPvpEnabled()) {
-			g_game.updateSpectatorsPvp(this);
-		}
 
 		if (getSkull() != SKULL_RED && getSkull() != SKULL_BLACK) {
 			setSkull(SKULL_NONE);
@@ -3899,7 +3387,7 @@ void Player::onCombatRemoveCondition(Condition* condition)
 	}
 }
 
-void Player::onAttackedCreature(Creature* target, bool addFightTicks /* = true */)
+void Player::onAttackedCreature(Creature* target)
 {
 	Creature::onAttackedCreature(target);
 
@@ -3908,9 +3396,7 @@ void Player::onAttackedCreature(Creature* target, bool addFightTicks /* = true *
 	}
 
 	if (target == this) {
-		if (addFightTicks) {
-			addInFightTicks();
-		}
+		addInFightTicks();
 		return;
 	}
 
@@ -3919,20 +3405,11 @@ void Player::onAttackedCreature(Creature* target, bool addFightTicks /* = true *
 	}
 
 	Player* targetPlayer = target->getPlayer();
-	if (targetPlayer) {
-		if (!g_game.isExpertPvpEnabled() && (isPartner(targetPlayer) || isGuildMate(targetPlayer))) {
-			addInFightTicks();
-			return;
-		}
-
-		if (!pzLocked && (g_game.getWorldType() == WORLD_TYPE_PVP_ENFORCED || g_game.getWorldType() == WORLD_TYPE_RETRO_OPEN_PVP)) {
+	if (targetPlayer && !isPartner(targetPlayer) && !isGuildMate(targetPlayer)) {
+		if (!pzLocked && g_game.getWorldType() == WORLD_TYPE_PVP_ENFORCED) {
 			pzLocked = true;
-			setPvpSituation(true);
-			targetPlayer->setPvpSituation(true);
 			sendIcons();
 		}
-
-		targetPlayer->addInFightTicks();
 
 		if (getSkull() == SKULL_NONE && getSkullClient(targetPlayer) == SKULL_YELLOW) {
 			addAttacked(targetPlayer);
@@ -3946,8 +3423,7 @@ void Player::onAttackedCreature(Creature* target, bool addFightTicks /* = true *
 			if (!Combat::isInPvpZone(this, targetPlayer) && !isInWar(targetPlayer)) {
 				addAttacked(targetPlayer);
 
-				if (targetPlayer->getSkull() == SKULL_NONE && getSkull() == SKULL_NONE && !targetPlayer->hasKilled(this) &&
-				 (g_game.getWorldType() == WORLD_TYPE_PVP || !isPartner(targetPlayer)) && (getTile() && !getTile()->hasFlag(TILESTATE_PROTECTIONZONE))) {
+				if (targetPlayer->getSkull() == SKULL_NONE && getSkull() == SKULL_NONE) {
 					setSkull(SKULL_WHITE);
 				}
 
@@ -3957,15 +3433,8 @@ void Player::onAttackedCreature(Creature* target, bool addFightTicks /* = true *
 			}
 		}
 	}
-	
-	if (g_game.isExpertPvpEnabled()) {
-		g_game.updateSpectatorsPvp(this);
-		g_game.updateSpectatorsPvp(targetPlayer);
-	}
 
-	if (addFightTicks) {
-		addInFightTicks();
-	}
+	addInFightTicks();
 }
 
 void Player::onAttacked()
@@ -3990,8 +3459,6 @@ void Player::onPlacedCreature()
 	if (!g_creatureEvents->playerLogin(this)) {
 		kickPlayer(true);
 	}
-
-	sendUnjustifiedPoints();
 }
 
 void Player::onAttackedCreatureDrainHealth(Creature* target, int32_t points)
@@ -4014,7 +3481,7 @@ void Player::onTargetCreatureGainHealth(Creature* target, int32_t points)
 	if (target && party) {
 		Player* tmpPlayer = nullptr;
 
-		if (isPartner(tmpPlayer) && (tmpPlayer != this)) {
+		if (target->getPlayer()) {
 			tmpPlayer = target->getPlayer();
 		} else if (Creature* targetMaster = target->getMaster()) {
 			if (Player* targetMasterPlayer = targetMaster->getPlayer()) {
@@ -4039,28 +3506,12 @@ bool Player::onKilledCreature(Creature* target, bool lastHit/* = true*/)
 	Creature::onKilledCreature(target, lastHit);
 
 	if (Player* targetPlayer = target->getPlayer()) {
-		if (targetPlayer && (targetPlayer->getZone() == ZONE_PVP)) {
+		if (targetPlayer && targetPlayer->getZone() == ZONE_PVP) {
 			targetPlayer->setDropLoot(false);
-			targetPlayer->setSkillLoss(false);
+			targetPlayer->setLossSkill(false);
 		} else if (!hasFlag(PlayerFlag_NotGainInFight) && !isPartner(targetPlayer)) {
-			bool canGainUnjust = hasAttacked(targetPlayer);
-			if (!canGainUnjust && g_game.getWorldType() == WORLD_TYPE_RETRO_OPEN_PVP) {
-				canGainUnjust = lastHit;
-			}
-
-			if (!Combat::isInPvpZone(this, targetPlayer) && canGainUnjust && !targetPlayer->hasAttacked(this) && !isGuildMate(targetPlayer) && targetPlayer != this) {
-				if (targetPlayer->hasKilled(this) && hasAttacked(targetPlayer)) {
-					for (auto& kill : targetPlayer->unjustifiedKills) {
-						if (kill.target == getGUID() && kill.unavenged) {
-							auto it = attackedSet.find(targetPlayer->guid);
-							if (it != attackedSet.end()) {
-								kill.unavenged = false;
-								attackedSet.erase(it);
-								break;
-							}
-						}
-					}
-				} else if (targetPlayer->getSkull() == SKULL_NONE && !isInWar(targetPlayer)) {
+			if (!Combat::isInPvpZone(this, targetPlayer) && hasAttacked(targetPlayer) && !targetPlayer->hasAttacked(this) && !isGuildMate(targetPlayer) && targetPlayer != this) {
+				if (targetPlayer->getSkull() == SKULL_NONE && !isInWar(targetPlayer)) {
 					unjustified = true;
 					addUnjustifiedDead(targetPlayer);
 				}
@@ -4083,7 +3534,6 @@ void Player::gainExperience(uint64_t gainExp, Creature* source)
 		return;
 	}
 
-	applyBonusExperience(gainExp, source);
 	addExperience(source, gainExp, true);
 }
 
@@ -4155,10 +3605,6 @@ void Player::changeMana(int32_t manaChange)
 		Creature::changeMana(manaChange);
 	}
 
-	if (party) {
-		party->broadcastPartyMana(this);
-	}
-
 	sendStats();
 }
 
@@ -4179,22 +3625,12 @@ bool Player::canWear(uint32_t lookType, uint8_t addons) const
 		return true;
 	}
 
-	const Outfit* outfit = Outfits::getInstance().getOutfitByLookType(sex, lookType);
+	const Outfit* outfit = Outfits::getInstance()->getOutfitByLookType(sex, lookType);
 	if (!outfit) {
 		return false;
 	}
 
 	if (outfit->premium && !isPremium()) {
-		return false;
-	}
-
-	if (outfit->vip && !isVip()) {
-		return false;
-	}
-
-	int32_t value;
-	if (getStorageValue(81723, value)){
-		sendTextMessage(MESSAGE_EVENT_ADVANCE, "You cannot change your outfit inside the Battlefield.");
 		return false;
 	}
 
@@ -4282,10 +3718,6 @@ bool Player::getOutfitAddons(const Outfit& outfit, uint8_t& addons) const
 		return false;
 	}
 
-	if (outfit.vip && !isVip()) {
-		return false;
-	}
-
 	for (const OutfitEntry& outfitEntry : outfits) {
 		if (outfitEntry.lookType != outfit.lookType) {
 			continue;
@@ -4308,16 +3740,6 @@ void Player::setSex(PlayerSex_t newSex)
 	sex = newSex;
 }
 
-void Player::setStamina(uint16_t stamina)
-{
-	uint16_t oldStamina = staminaMinutes;
-	staminaMinutes = std::min<uint16_t>(2520, stamina);
-	sendStats();
-	if (oldStamina - staminaMinutes > 0) {
-		decreasePreyTimeLeft(oldStamina - staminaMinutes);
-	}
-}
-
 Skulls_t Player::getSkull() const
 {
 	if (hasFlag(PlayerFlag_NotGainInFight)) {
@@ -4328,33 +3750,17 @@ Skulls_t Player::getSkull() const
 
 Skulls_t Player::getSkullClient(const Creature* creature) const
 {
-	if (!creature || !g_game.isWorldTypeSkull()) {
+	if (!creature || g_game.getWorldType() != WORLD_TYPE_PVP) {
 		return SKULL_NONE;
 	}
 
 	const Player* player = creature->getPlayer();
 	if (player && player->getSkull() == SKULL_NONE) {
-		if (player == this) {
-			for (const auto& kill : unjustifiedKills) {
-				if (kill.unavenged && (OS_TIME(nullptr) - kill.time) < g_config.getNumber(ConfigManager::ORANGE_SKULL_DURATION) * 24 * 60 * 60) {
-					return SKULL_ORANGE;
-				}
-			}
-		}
-
 		if (isInWar(player)) {
 			return SKULL_GREEN;
 		}
 
-		if (!player->getGuildWarVector().empty() && guild == player->getGuild()) {
-			return SKULL_GREEN;
-		}
-
-		if (player->hasKilled(this)) {
-			return SKULL_ORANGE;
-		}
-
-		if (isPartner(player)) {
+		if (!player->getGuildWarList().empty() && guild == player->getGuild()) {
 			return SKULL_GREEN;
 		}
 
@@ -4362,19 +3768,11 @@ Skulls_t Player::getSkullClient(const Creature* creature) const
 			return SKULL_YELLOW;
 		}
 
-	}
-	return Creature::getSkullClient(creature);
-}
-
-bool Player::hasKilled(const Player* player) const
-{
-	for (const auto& kill : unjustifiedKills) {
-		if (kill.target == player->getGUID() && (OS_TIME(nullptr) - kill.time) < g_config.getNumber(ConfigManager::ORANGE_SKULL_DURATION) * 24 * 60 * 60 && kill.unavenged) {
-			return true;
+		if (isPartner(player)) {
+			return SKULL_GREEN;
 		}
 	}
-
-	return false;
+	return Creature::getSkullClient(creature);
 }
 
 bool Player::hasAttacked(const Player* attacked) const
@@ -4395,18 +3793,6 @@ void Player::addAttacked(const Player* attacked)
 	attackedSet.insert(attacked->guid);
 }
 
-void Player::removeAttacked(const Player* attacked)
-{
-	if (!attacked || attacked == this) {
-		return;
-	}
-
-	auto it = attackedSet.find(attacked->guid);
-	if (it != attackedSet.end()) {
-		attackedSet.erase(it);
-	}
-}
-
 void Player::clearAttacked()
 {
 	attackedSet.clear();
@@ -4418,99 +3804,31 @@ void Player::addUnjustifiedDead(const Player* attacked)
 		return;
 	}
 
-	if (isInWar(attacked)) {
-		return;
-	}
-
-	if (inprivatewar) {
-		sendTextMessage(MESSAGE_EVENT_ADVANCE, "Warning! War System is over, please caution!");
-		return;
-	}
-
-	if (attacked && attacked->getLevel() <= 50) {
-		return;
-	}
-
 	sendTextMessage(MESSAGE_EVENT_ADVANCE, "Warning! The murder of " + attacked->getName() + " was not justified.");
 
-	unjustifiedKills.emplace_back(attacked->getGUID(), OS_TIME(nullptr), true);
-
-	uint8_t dayKills = 0;
-	uint8_t weekKills = 0;
-	uint8_t monthKills = 0;
-
-	for (const auto& kill : unjustifiedKills) {
-		const auto diff = OS_TIME(nullptr) - kill.time;
-		if (diff <= 4 * 60 * 60) {
-			dayKills += 1;
-		}
-		if (diff <= 7 * 24 * 60 * 60) {
-			weekKills += 1;
-		}
-		if (diff <= 30 * 24 * 60 * 60) {
-			monthKills += 1;
-		}
-	}
+	skullTicks += g_config.getNumber(ConfigManager::FRAG_TIME);
 
 	if (getSkull() != SKULL_BLACK) {
-		if (dayKills >= 2 * g_config.getNumber(ConfigManager::DAY_KILLS_TO_RED) || weekKills >= 2 * g_config.getNumber(ConfigManager::WEEK_KILLS_TO_RED) || monthKills >= 2 * g_config.getNumber(ConfigManager::MONTH_KILLS_TO_RED)) {
+		if (g_config.getNumber(ConfigManager::KILLS_TO_BLACK) != 0 && skullTicks > (g_config.getNumber(ConfigManager::KILLS_TO_BLACK) - 1) * static_cast<int64_t>(g_config.getNumber(ConfigManager::FRAG_TIME))) {
 			setSkull(SKULL_BLACK);
-			lastday = OS_TIME(nullptr);
-			//start black skull time
-			skullTicks = static_cast<int64_t>(g_config.getNumber(ConfigManager::BLACK_SKULL_DURATION)) * 24 * 60 * 60 * 1000;
-		} else if (dayKills >= g_config.getNumber(ConfigManager::DAY_KILLS_TO_RED) || weekKills >= g_config.getNumber(ConfigManager::WEEK_KILLS_TO_RED) || monthKills >= g_config.getNumber(ConfigManager::MONTH_KILLS_TO_RED)) {
+		} else if (getSkull() != SKULL_RED && g_config.getNumber(ConfigManager::KILLS_TO_RED) != 0 && skullTicks > (g_config.getNumber(ConfigManager::KILLS_TO_RED) - 1) * static_cast<int64_t>(g_config.getNumber(ConfigManager::FRAG_TIME))) {
 			setSkull(SKULL_RED);
-			lastday = OS_TIME(nullptr);
-			//reset red skull time
-			skullTicks = static_cast<int64_t>(g_config.getNumber(ConfigManager::RED_SKULL_DURATION)) * 24 * 60 * 60 * 1000;
 		}
 	}
-
-	sendUnjustifiedPoints();
 }
 
-void Player::checkSkullTicks(int64_t ticks)
+void Player::checkSkullTicks(int32_t ticks)
 {
-	int64_t newTicks = skullTicks - ticks;
+	int32_t newTicks = skullTicks - ticks;
 	if (newTicks < 0) {
-		// skullTicks = 0;
+		skullTicks = 0;
 	} else {
-		// skullTicks = newTicks;
+		skullTicks = newTicks;
 	}
 
 	if ((skull == SKULL_RED || skull == SKULL_BLACK) && skullTicks < 1000 && !hasCondition(CONDITION_INFIGHT)) {
 		setSkull(SKULL_NONE);
 	}
-}
-
-void Player::updateSkullTicks()
-{
-	time_t timeNow = OS_TIME(nullptr);
-
-	if (skullTicks != 0) {
-		if (lastday == 0) {
-			lastday = timeNow;
-		} else {
-			uint32_t days = (timeNow - lastday) / 86400;
-			if (days > 0) {
-				if ((days * 86400 * 1000) >= skullTicks) {
-					skullTicks = 0;
-					lastday = 0;
-				} else {
-					skullTicks -= (days * 86400 * 1000);
-					time_t remainder = (timeNow - lastday) % 86400;
-					lastday = timeNow - remainder;
-				}
-			}
-		}
-	} else if (lastday != 0) {
-		lastday = 0;
-	}
-
-	if (skullTicks <= 0) {
-		setSkull(SKULL_NONE);
-	}
-
 }
 
 bool Player::isPromoted() const
@@ -4521,13 +3839,7 @@ bool Player::isPromoted() const
 
 double Player::getLostPercent() const
 {
-	int32_t blessingCount = 0;
-	uint8_t maxBlessing = 8;
-	for (int i = 1; i <= maxBlessing; i++) {
-		if (hasBlessing(i)) {
-			blessingCount++;
-		}
-	}
+	int32_t blessingCount = std::bitset<5>(blessings).count();
 
 	int32_t deathLosePercent = g_config.getNumber(ConfigManager::DEATH_LOSE_PERCENT);
 	if (deathLosePercent != -1) {
@@ -4544,16 +3856,14 @@ double Player::getLostPercent() const
 		double tmpLevel = level + (levelPercent / 100.);
 		lossPercent = static_cast<double>((tmpLevel + 50) * 50 * ((tmpLevel * tmpLevel) - (5 * tmpLevel) + 8)) / experience;
 	} else {
-		lossPercent = 5;
+		lossPercent = 10;
 	}
 
-	double percentReduction = 0;
 	if (isPromoted()) {
-		percentReduction += 30;
+		lossPercent *= 0.7;
 	}
 
-	percentReduction += blessingCount * 8;
-	return lossPercent * (1 - (percentReduction / 100.)) / 100.;
+	return lossPercent * pow(0.92, blessingCount) / 100;
 }
 
 void Player::learnInstantSpell(const std::string& spellName)
@@ -4602,7 +3912,7 @@ bool Player::isInWar(const Player* player) const
 
 bool Player::isInWarList(uint32_t guildId) const
 {
-	return std::find(guildWarVector.begin(), guildWarVector.end(), guildId) != guildWarVector.end();
+	return std::find(guildWarList.begin(), guildWarList.end(), guildId) != guildWarList.end();
 }
 
 bool Player::isPremium() const
@@ -4618,62 +3928,6 @@ void Player::setPremiumDays(int32_t v)
 {
 	premiumDays = v;
 	sendBasicData();
-}
-
-void Player::setTibiaCoins(int32_t v, CoinType_t coinType)
-{
-	switch (coinType) {
-		case COIN_TYPE_DEFAULT:
-		case COIN_TYPE_TRANSFERABLE: {
-			coinBalance = v;
-			break;
-		}
-
-		case COIN_TYPE_TOURNAMENT: {
-			tournamentCoinBalance = v;
-			break;
-		}
-
-		default: {
-			coinBalance = v;
-			break;
-		}
-	}
-}
-
-bool Player::canRemoveCoins(int32_t v, CoinType_t coinType)
-{
-	if (lastupdatecoin - OTSYS_TIME() < 2000) {
-		// a cada 2 segundos atualizar, na diferença que for chamada
-		lastupdatecoin = OTSYS_TIME() + 2000;
-		if (coinType == COIN_TYPE_DEFAULT || coinType == COIN_TYPE_TRANSFERABLE) {
-			coinBalance = IOAccount::getCoinBalance(accountNumber);
-		} else if (coinType == COIN_TYPE_TOURNAMENT) {
-			tournamentCoinBalance = IOAccount::getCoinBalance(accountNumber, coinType);
-		}
-	}
-
-
-	int32_t coins; 
-	switch (coinType) {
-		case COIN_TYPE_DEFAULT:
-		case COIN_TYPE_TRANSFERABLE: {
-			coins = coinBalance;
-			break;
-		}
-
-		case COIN_TYPE_TOURNAMENT: {
-			coins = tournamentCoinBalance;
-			break;
-		}
-
-		default: {
-			coins = coinBalance;
-			break;
-		}
-	}
-
-	return (coins - v) >= 0;
 }
 
 PartyShields_t Player::getPartyShield(const Player* player) const
@@ -4741,7 +3995,7 @@ bool Player::isInviting(const Player* player) const
 
 bool Player::isPartner(const Player* player) const
 {
-	if (!player || !party || player == this) {
+	if (!player || !party) {
 		return false;
 	}
 	return party == player->party;
@@ -4796,7 +4050,7 @@ GuildEmblems_t Player::getGuildEmblem(const Player* player) const
 		return GUILDEMBLEM_NONE;
 	}
 
-	if (player->getGuildWarVector().empty()) {
+	if (player->getGuildWarList().empty()) {
 		if (guild == playerGuild) {
 			return GUILDEMBLEM_MEMBER;
 		} else {
@@ -4809,43 +4063,6 @@ GuildEmblems_t Player::getGuildEmblem(const Player* player) const
 	}
 
 	return GUILDEMBLEM_NEUTRAL;
-}
-
-void Player::sendUnjustifiedPoints()
-{
-	if (client) {
-		double dayKills = 0;
-		double weekKills = 0;
-		double monthKills = 0;
-
-		for (const auto& kill : unjustifiedKills) {
-			const auto diff = OS_TIME(nullptr) - kill.time;
-			if (diff <= 24 * 60 * 60) {
-				dayKills += 1;
-			}
-			if (diff <= 7 * 24 * 60 * 60) {
-				weekKills += 1;
-			}
-			if (diff <= 30 * 24 * 60 * 60) {
-				monthKills += 1;
-			}
-		}
-
-		bool isRed = getSkull() == SKULL_RED;
-
-		auto dayMax = ((isRed ? 2 : 1) * g_config.getNumber(ConfigManager::DAY_KILLS_TO_RED));
-		auto weekMax = ((isRed ? 2 : 1) * g_config.getNumber(ConfigManager::WEEK_KILLS_TO_RED));
-		auto monthMax = ((isRed ? 2 : 1) * g_config.getNumber(ConfigManager::MONTH_KILLS_TO_RED));		
-
-		uint8_t dayProgress = std::min(std::round(dayKills / dayMax * 100), 100.0);
-		uint8_t weekProgress = std::min(std::round(weekKills / weekMax * 100), 100.0);
-		uint8_t monthProgress = std::min(std::round(monthKills / monthMax * 100), 100.0);
-		uint8_t skullDuration = 0;
-		if (skullTicks != 0) {
-			skullDuration = std::floor<uint8_t>(skullTicks / (24 * 60 * 60 * 1000));
-		}
-		client->sendUnjustifiedPoints(dayProgress, std::max(dayMax - dayKills, 0.0), weekProgress, std::max(weekMax - weekKills, 0.0), monthProgress, std::max(monthMax - monthKills, 0.0), skullDuration);
-	}
 }
 
 uint8_t Player::getCurrentMount() const
@@ -4879,7 +4096,7 @@ bool Player::toggleMount(bool mount)
 			return false;
 		}
 
-		const Outfit* playerOutfit = Outfits::getInstance().getOutfitByLookType(getSex(), defaultOutfit.lookType);
+		const Outfit* playerOutfit = Outfits::getInstance()->getOutfitByLookType(getSex(), defaultOutfit.lookType);
 		if (!playerOutfit) {
 			return false;
 		}
@@ -4903,11 +4120,6 @@ bool Player::toggleMount(bool mount)
 
 		if (currentMount->premium && !isPremium()) {
 			sendCancelMessage(RETURNVALUE_YOUNEEDPREMIUMACCOUNT);
-			return false;
-		}
-
-		if (currentMount->vip && !isVip()) {
-			sendCancelMessage(RETURNVALUE_YOUNEEDVIPACCOUNT);
 			return false;
 		}
 
@@ -4990,10 +4202,6 @@ bool Player::hasMount(const Mount* mount) const
 	}
 
 	if (mount->premium && !isPremium()) {
-		return false;
-	}
-
-	if (mount->vip && !isVip()) {
 		return false;
 	}
 
@@ -5140,7 +4348,6 @@ bool Player::addOfflineTrainingTries(skills_t skill, uint64_t tries)
 	}
 
 	if (sendUpdate) {
-		sendStats();
 		sendSkills();
 	}
 
@@ -5265,9 +4472,9 @@ size_t Player::getMaxDepotItems() const
 	if (group->maxDepotItems != 0) {
 		return group->maxDepotItems;
 	} else if (isPremium()) {
-		return g_config.getNumber(ConfigManager::PREMIUM_DEPOT_LIMIT);
+		return 2000;
 	}
-	return g_config.getNumber(ConfigManager::FREE_DEPOT_LIMIT);
+	return 1000;
 }
 
 std::forward_list<Condition*> Player::getMuteConditions() const
@@ -5301,7 +4508,7 @@ void Player::setGuild(Guild* guild)
 	this->guildRank = nullptr;
 
 	if (guild) {
-		GuildRank_ptr rank = guild->getRankByLevel(1);
+		const GuildRank* rank = guild->getRankByLevel(1);
 		if (!rank) {
 			return;
 		}
@@ -5315,806 +4522,3 @@ void Player::setGuild(Guild* guild)
 		oldGuild->removeMember(this);
 	}
 }
-
-//Custom: Anti bug do market
-bool Player::isMarketExhausted() const {
-	uint32_t exhaust_time = 3000; // half second 500
-	return (OTSYS_TIME() - lastMarketInteraction < exhaust_time);
-}
-
-void Player::onEquipImbueItem(Imbuement* imbuement)
-{
-	// check skills
-	bool requestUpdate = false;
-
-	for (int32_t i = SKILL_FIST; i <= SKILL_LAST; ++i) {
-		if (imbuement->skills[i]) {
-			requestUpdate = true;
-			setVarSkill(static_cast<skills_t>(i), imbuement->skills[i]);
-		}
-	}
-
-	// check magpoint
-	for (int32_t s = STAT_FIRST; s <= STAT_LAST; ++s) {
-		if (imbuement->stats[s]) {
-			requestUpdate = true;
-			setVarStats(static_cast<stats_t>(s), imbuement->stats[s]);
-		}
-	}
-
-	// speed
-	if (imbuement->speed != 0) {
-		g_game.changeSpeed(this, imbuement->speed);
-	}
-
-	// capacity
-	if (imbuement->capacity != 0) {
-		double capImbue = static_cast<double>(imbuement->capacity)/100;
-		varCap = capacity * capImbue;
-		requestUpdate = true;
-	}
-
-	if (requestUpdate) {
-		requestUpdate = false;
-		sendStats();
-		sendSkills();
-	}
-
-	return;
-}
-
-void Player::onDeEquipImbueItem(Imbuement* imbuement)
-{
-	// check skills
-	bool requestUpdate = false;
-
-	for (int32_t i = SKILL_FIST; i <= SKILL_LAST; ++i) {
-		if (imbuement->skills[i]) {
-			requestUpdate = true;
-			setVarSkill(static_cast<skills_t>(i), -imbuement->skills[i]);
-		}
-	}
-
-	// check magpoint
-	for (int32_t s = STAT_FIRST; s <= STAT_LAST; ++s) {
-		if (imbuement->stats[s]) {
-			requestUpdate = true;
-			setVarStats(static_cast<stats_t>(s), -imbuement->stats[s]);
-		}
-	}
-
-	// speed
-	if (imbuement->speed != 0) {
-		g_game.changeSpeed(this, -imbuement->speed);
-	}
-
-	// capacity
-	if (imbuement->capacity != 0) {
-		varCap = 0;
-		requestUpdate = true;
-	}
-
-	if (requestUpdate) {
-		requestUpdate = false;
-		sendStats();
-		sendSkills();
-	}
-
-	return;
-}
-
-StreakBonus_t Player::getStreakDaysBonus()const {
-	int32_t value;
-	StreakBonus_t bonus;
-
-	getStorageValue(DAILYREWARDSTORAGE_STREAKDAYS,value);
-
-	if(value <= 1)
-		bonus = STREAKBONUS_NOBONUS;
-	else if(value == 2)
-		bonus = STREAKBONUS_HEALTHBONUS;
-	else if(value == 3)
-		bonus = STREAKBONUS_MANABONUS;
-	else if(value == 4)
-		bonus = STREAKBONUS_STAMINABONUS;
-	else if(value == 5)
-		bonus = STREAKBONUS_DOUBLEHEALTHBONUS;
-	else if(value == 6)
-		bonus = STREAKBONUS_DOUBLEMANABONUS;
-	else
-		bonus = STREAKBONUS_SOULBONUS;
-
-	return bonus;
-}
-
-void Player::sendRestingAreaIcon(uint16_t currentIcons) const {
-	if (client && getProtocolVersion() >= 1140) {
-		if (hasBitSet(ICON_PIGEON, currentIcons)) {
-			bool activeResting = false;
-
-			if (getStreakDaysBonus() > STREAKBONUS_NOBONUS) {
-				activeResting = true;
-			}
-			client->sendRestingAreaIcon(true, activeResting);
-		} else {
-			client->sendRestingAreaIcon(false); // clear
-		}
-	}
-}
-
-bool Player::doCritical(uint64_t crit)
-{
-	if (crit > critical) {
-		critical = crit;
-		return true;
-	}
-
-	return false;
-}
-
-void Player::addBestiaryKill(uint16_t racedid, int32_t value, bool gained)
-{
-	if (value != -1) {
-		auto it = bestiaryKills.find(racedid);
-		if (it == bestiaryKills.end()) {
-			BestiaryPoints bestiaryPoints;
-			bestiaryPoints.kills = value;
-			bestiaryPoints.gained = gained;
-			bestiaryKills[racedid] = bestiaryPoints;
-		} else {
-			BestiaryPoints& bestiaryPoints = it->second;
-			bestiaryPoints.kills = bestiaryPoints.kills + value;
-			if (gained) {
-				bestiaryPoints.gained = gained;
-			}
-		}
-
-	} else {
-		bestiaryKills.erase(racedid);
-	}
-}
-
-bool Player::getBestiaryKill(uint16_t racedid, int32_t value) const
-{
-	auto it = bestiaryKills.find(racedid);
-	if (it == bestiaryKills.end()) {
-		value = -1;
-		return false;
-	}
-
-	const BestiaryPoints& bestiaryPoints = it->second;
-	value = bestiaryPoints.kills;
-	return true;
-}
-
-int32_t Player::getBestiaryKills(uint16_t racedid)
-{
-	auto it = bestiaryKills.find(racedid);
-	if (it != bestiaryKills.end()) {
-		BestiaryPoints& bestiaryPoints = it->second;
-		return bestiaryPoints.kills;
-	}
-
-	return 0;
-}
-
-bool Player::gainedCharmPoints(uint16_t racedid)
-{
-	auto it = bestiaryKills.find(racedid);
-	if (it != bestiaryKills.end()) {
-		BestiaryPoints& bestiaryPoints = it->second;
-		return bestiaryPoints.gained;
-	}
-
-	return false;
-}
-
-uint16_t Player::getCurrentCreature(uint8_t charmid)
-{
-	for (const auto& it : charmMap) {
-		if (it.first == charmid) {
-			return it.second;
-		}
-	}
-
-	return 0;
-}
-
-void Player::addCharm(uint8_t charmid, uint16_t raceid)
-{
-	charmMap[charmid] = raceid;
-}
-
-void Player::removeCharm(uint8_t charmid, bool remove)
-{
-	if (remove) { // eraser
-		charmMap.erase(charmid);
-	} else {
-		charmMap[charmid] = 0;
-	}
-}
-
-int8_t Player::getMonsterCharm(uint16_t racedid)
-{
-	for (const auto& it : charmMap) {
-		if (it.second == racedid) {
-			return it.first;
-		}
-	}
-
-	return -1;
-}
-
-void Player::setEffectLowBlow(bool newvalue)
-{
-	if (newvalue == effectLowBlow) {
-		return;
-	}
-
-	if (newvalue) {
-		setVarSkill(SKILL_CRITICAL_HIT_CHANCE, 3);
-	} else {
-		setVarSkill(SKILL_CRITICAL_HIT_CHANCE, -3);
-	}
-
-	sendSkills();
-	effectLowBlow = newvalue;
-}
-
-void Player::manageMonsterTracker(uint16_t raceid)
-{
-	int count = 0;
-	for (const auto& race : bestiaryTracker) {
-		if (race == raceid) {
-			bestiaryTracker.erase(bestiaryTracker.begin() + count);
-			sendBestiaryTracker();
-			return;
-		}
-		count++;
-	}
-
-	if (bestiaryTracker.size() >= 250) {
-		return;
-	}
-
-	bestiaryTracker.emplace_back(raceid);
-
-	sendBestiaryTracker();
-}
-
-bool Player::monsterInTracker(uint16_t raceid)
-{
-	for (const auto& race : bestiaryTracker) {
-		if (race == raceid) {
-			return true;
-		}
-	}
-
-	return false;
-}
-
-void Player::generatePreyData()
-{
-	for (uint8_t preySlotId = 0; preySlotId < PREY_SLOTCOUNT; preySlotId++) {
-		if (preySlotId != 2) {
-			changePreyDataState(preySlotId, STATE_SELECTION);
-		}
-	}
-}
-
-ReturnValue Player::changePreyDataState(uint8_t preySlotId, PreyState state, uint8_t monsterIndex, std::string monsterName)
-{
-	if (preySlotId >= PREY_SLOTCOUNT) {
-		return RETURNVALUE_PREYINTERNALERROR;
-	}
-
-	PreyData& currentPrey = preyData[preySlotId];
-
-	bool success = false;
-
-	if ((currentPrey.state != STATE_ACTIVE && state == STATE_SELECTION) || ((currentPrey.state == STATE_ACTIVE || currentPrey.state == STATE_SELECTION_CHANGE_MONSTER) && state == STATE_SELECTION_CHANGE_MONSTER)) {
-		std::vector<std::string> elim;
-		elim.reserve(9 * 3);
-		for (uint8_t slotId = 0; slotId < PREY_SLOTCOUNT; slotId++) {
-			if (slotId != preySlotId) {
-				PreyData& anotherPrey = preyData[slotId];
-				elim.insert(elim.end(), anotherPrey.preyList.begin(), anotherPrey.preyList.end());
-			}
-		}
-		std::sort(elim.begin(), elim.end());
-
-		currentPrey.preyList = std::move(selectRandom(g_prey.getPreyNames(), 9, elim));
-		success = true;
-	} else if (currentPrey.state == STATE_ACTIVE && state == STATE_SELECTION) {
-		auto it = std::find(currentPrey.preyList.begin(), currentPrey.preyList.end(), currentPrey.preyMonster);
-		if (it != currentPrey.preyList.end()) {
-			currentPrey.preyList.erase(it);
-
-			std::vector<std::string> elim;
-			elim.reserve(9 * PREY_SLOTCOUNT);
-			for (uint8_t slotId = 0; slotId < PREY_SLOTCOUNT; slotId++) {
-				PreyData& anotherPrey = preyData[slotId];
-				elim.insert(elim.end(), anotherPrey.preyList.begin(), anotherPrey.preyList.end());
-			}
-
-			std::sort(elim.begin(), elim.end());
-			std::vector<std::string> tmpVector = selectRandom(g_prey.getPreyNames(), 1, elim);
-			if (tmpVector.size() > 0) {
-				currentPrey.preyList.emplace_back(tmpVector[0]);
-				std::sort(currentPrey.preyList.begin(), currentPrey.preyList.end());
-			}
-
-			success = true;
-		}
-	} else if ((currentPrey.state == STATE_SELECTION || currentPrey.state == STATE_SELECTION_CHANGE_MONSTER) && state == STATE_ACTIVE) {
-		if (monsterIndex >= 0 && monsterIndex < currentPrey.preyList.size()) {
-			std::string monster = currentPrey.preyList[monsterIndex];
-			bool jaTemBonus = false;
-			for (uint8_t slotId = 0; slotId < PREY_SLOTCOUNT; slotId++) {
-				PreyData& anotherPrey = preyData[slotId];
-				if (strcasecmp(anotherPrey.preyMonster.c_str(), monster.c_str()) == 0) {
-					jaTemBonus = true;
-					break;
-				}
-			}
-
-			if (!jaTemBonus) {
-				currentPrey.preyMonster = monster;
-				currentPrey.timeLeft = g_prey.getPreyDuration();
-	
-				if (currentPrey.state == STATE_SELECTION) {
-					currentPrey.bonusGrade = uniform_random(1, 10);
-					const BonusEntry& bonus = g_prey.getAvailableBonuses()[uniform_random(0, static_cast<int32_t>(g_prey.getAvailableBonuses().size()) - 1)];
-					currentPrey.bonusType = bonus.type;
-					currentPrey.bonusValue = bonus.initialValue + bonus.step * (currentPrey.bonusGrade - 1);
-				}
-	
-				success = true;
-			} else {
-				return RETURNVALUE_CHOSENMONSTERISALREADYINUSE;
-			}
-		} else {
-			return RETURNVALUE_PREYINTERNALERROR;
-		}
-	} else if ((currentPrey.state == STATE_SELECTION_WILDCARD) && state == STATE_ACTIVE) {
-		bool contemMonstro = false;
-		bool jaTemBonus = false;
-		for (const auto& mname : g_prey.getPreyNames()) {
-			if (strcasecmp(mname.c_str(), monsterName.c_str()) == 0) {
-				contemMonstro = true;
-				break;
-			}
-		}
-		for (uint8_t slotId = 0; slotId < PREY_SLOTCOUNT; slotId++) {
-			PreyData& anotherPrey = preyData[slotId];
-			if (strcasecmp(anotherPrey.preyMonster.c_str(), monsterName.c_str()) == 0) {
-				jaTemBonus = true;
-				break;
-			}
-		}
-		if (contemMonstro && !jaTemBonus) {
-			currentPrey.preyMonster = monsterName;
-			currentPrey.timeLeft = g_prey.getPreyDuration();
-			if (currentPrey.bonusType == BONUS_NONE) {
-				currentPrey.bonusGrade = uniform_random(1, 10);
-				const BonusEntry& bonus = g_prey.getAvailableBonuses()[uniform_random(0, static_cast<int32_t>(g_prey.getAvailableBonuses().size()) - 1)];
-				currentPrey.bonusType = bonus.type;
-				currentPrey.bonusValue = bonus.initialValue + bonus.step * (currentPrey.bonusGrade - 1);
-			}
-			success = true;
-		} else if (jaTemBonus) {
-			return RETURNVALUE_CHOSENMONSTERISALREADYINUSE;
-		} else {
-			return RETURNVALUE_PREYINTERNALERROR;
-		}
-	} else if (state == STATE_INACTIVE || STATE_LOCKED) {
-		currentPrey.preyList.clear();
-		success = true;
-	} else if (state == STATE_SELECTION_WILDCARD) {
-		success = true;
-	}
-
-	if (success) {
-		currentPrey.state = state;
-		sendPreyData(preySlotId);
-		return RETURNVALUE_NOERROR;
-	}
-	return RETURNVALUE_PREYINTERNALERROR;
-}
-
-void Player::setPreyData(std::vector<PreyData>&& preyData) 
-{
-	this->preyData = preyData;
-}
-
-void Player::serializePreyData(PropWriteStream& propWriteStream) const
-{
-	for (uint8_t preySlotId = 0; preySlotId < PREY_SLOTCOUNT; preySlotId++) {
-		const PreyData& currentPrey = preyData[preySlotId];
-		propWriteStream.write<uint8_t>(preySlotId);
-		propWriteStream.write<uint64_t>(currentPrey.lastReroll);
-		propWriteStream.write<PreyState>(currentPrey.state);
-		if (currentPrey.state == STATE_ACTIVE) {
-			propWriteStream.writeString(currentPrey.preyMonster);
-			propWriteStream.write<uint16_t>(currentPrey.timeLeft);
-			propWriteStream.write<BonusType>(currentPrey.bonusType);
-			propWriteStream.write<uint16_t>(currentPrey.bonusValue);
-			propWriteStream.write<uint8_t>(currentPrey.bonusGrade);
-		} else if (currentPrey.state == STATE_SELECTION_CHANGE_MONSTER) {
-			propWriteStream.write<BonusType>(currentPrey.bonusType);
-			propWriteStream.write<uint16_t>(currentPrey.bonusValue);
-			propWriteStream.write<uint8_t>(currentPrey.bonusGrade);
-		}
-		propWriteStream.write<uint8_t>(currentPrey.preyList.size());
-		for (const std::string& preyName : currentPrey.preyList) {
-			propWriteStream.writeString(preyName);
-		}
-	}
-}
-
-void Player::updateRerollPrice() {
-	uint32_t price = g_prey.getRerollPricePerLevel() * level;
-	sendRerollPrice(price);
-}
-
-ReturnValue Player::rerollPreyData(uint8_t preySlotId)
-{
-	if (preySlotId >= PREY_SLOTCOUNT) {
-		return RETURNVALUE_PREYINTERNALERROR;
-	}
-
-	PreyData& currentPrey = preyData[preySlotId];
-	if (static_cast<int64_t>(OTSYS_TIME() - currentPrey.lastReroll) < static_cast<int64_t>(g_prey.getTimeToFreeReroll() * 60 * 1000)) {
-		uint64_t rerollPrice = g_prey.getRerollPricePerLevel() * level;
-		if (!g_game.removeMoney(this, rerollPrice, 0, true)) {
-			return RETURNVALUE_NOTENOUGHMONEYFORREROLL;
-		} else {
-			sendResourceData(RESOURCETYPE_BANK_GOLD, getBankBalance());
-			sendResourceData(RESOURCETYPE_INVENTORY_GOLD, getMoney());
-		}
-	} else {
-		currentPrey.lastReroll = OTSYS_TIME();
-	}
-
-	if (currentPrey.state == STATE_ACTIVE) {
-		changePreyDataState(preySlotId, STATE_SELECTION_CHANGE_MONSTER);
-		return RETURNVALUE_NOERROR;
-	} else if (currentPrey.state == STATE_SELECTION || currentPrey.state == STATE_SELECTION_CHANGE_MONSTER) {
-		changePreyDataState(preySlotId, currentPrey.state);
-		return RETURNVALUE_NOERROR;
-	}
-
-	return RETURNVALUE_PREYINTERNALERROR;
-}
-
-ReturnValue Player::rerollPreyDataWildcard(uint8_t preySlotId)
-{
-	if (preySlotId >= PREY_SLOTCOUNT) {
-		return RETURNVALUE_PREYINTERNALERROR;
-	}
-
-	uint64_t rerollPrice = 5;
-	if (getBonusRerollCount() - rerollPrice < 0) {
-		return RETURNVALUE_NOTENOUGHMONEYFORREROLL;
-	}
-
-	setBonusRerollCount(getBonusRerollCount() - rerollPrice);
-	sendResourceData(RESOURCETYPE_PREY_BONUS_REROLLS, getBonusRerollCount());
-	changePreyDataState(preySlotId, STATE_SELECTION_WILDCARD);
-	return RETURNVALUE_NOERROR;
-}
-
-ReturnValue Player::rerollPreyBonus(uint8_t preySlotId)
-{
-	if (preySlotId >= PREY_SLOTCOUNT) {
-		return RETURNVALUE_PREYINTERNALERROR;
-	}
-
-	if (bonusRerollCount <= 0) {
-		return RETURNVALUE_NOAVAILABLEBONUSREROLL;
-	}
-
-	PreyData& currentPrey = preyData[preySlotId];
-	if (currentPrey.state == STATE_ACTIVE || currentPrey.state == STATE_SELECTION_CHANGE_MONSTER) {
-		const std::vector<BonusEntry>& availableBonuses = g_prey.getAvailableBonuses();
-		std::vector<BonusEntry> possibles = availableBonuses;
-		if (currentPrey.bonusGrade == 10) {
-			auto it = std::find_if(possibles.begin(), possibles.end(), [&](const BonusEntry& v) { return v.type == currentPrey.bonusType; });
-			if (it != possibles.end()) {
-				possibles.erase(it);
-			}
-		} else {
-			currentPrey.bonusGrade = uniform_random(currentPrey.bonusGrade + 1, 10);
-		}
-
-		const BonusEntry& randomBonus = possibles[uniform_random(0, possibles.size() - 1)];
-		currentPrey.bonusType = randomBonus.type;
-		currentPrey.bonusValue = randomBonus.initialValue + randomBonus.step * (currentPrey.bonusGrade - 1);
-		currentPrey.timeLeft = g_prey.getPreyDuration();
-
-		setBonusRerollCount(bonusRerollCount - 1);
-		sendPreyData(preySlotId);
-		sendResourceData(RESOURCETYPE_PREY_BONUS_REROLLS, getBonusRerollCount());
-		return RETURNVALUE_NOERROR;
-	}
-
-	return RETURNVALUE_PREYINTERNALERROR;
-}
-
-uint16_t Player::getFreeRerollTime(uint8_t preySlotId)
-{
-	if (preySlotId >= PREY_SLOTCOUNT) {
-		return 0;
-	}
-
-	PreyData& currentPrey = preyData[preySlotId];
-	int64_t time = (static_cast<int64_t>(currentPrey.lastReroll) - OTSYS_TIME() + g_prey.getTimeToFreeReroll() * 60 * 1000) / 60 / 1000;
-	return std::min<int64_t>(std::max<int64_t>(0, time), std::numeric_limits<uint16_t>::max());
-}
-
-uint16_t Player::getPreyTimeLeft(uint8_t preySlotId)
-{
-	if (preySlotId >= PREY_SLOTCOUNT) {
-		return 0;
-	}
-
-	PreyData& currentPrey = preyData[preySlotId];
-	return currentPrey.timeLeft;
-}
-
-void Player::decreasePreyTimeLeft(uint16_t amount)
-{
-	amount = std::abs(amount);
-	for (uint8_t preySlotId = 0; preySlotId < PREY_SLOTCOUNT; preySlotId++) {
-		PreyData& currentPrey = preyData[preySlotId];
-		if (currentPrey.state == STATE_ACTIVE) {
-			currentPrey.timeLeft = std::max(0, currentPrey.timeLeft - amount * 60);
-			if (currentPrey.timeLeft > 0) {
-				sendPreyTimeLeft(preySlotId);
-			} else {
-				changePreyDataState(preySlotId, STATE_SELECTION);
-			}
-		}
-	}
-}
-
-uint16_t Player::getPreyBonusLoot(MonsterType* mType)
-{
-	if (!mType) {
-		return 0;
-	}
-
-	for (uint8_t preySlotId = 0; preySlotId < PREY_SLOTCOUNT; preySlotId++) {
-		PreyData& currentPrey = preyData[preySlotId];
-		if (currentPrey.state == STATE_ACTIVE && currentPrey.bonusType == BONUS_IMPROVED_LOOT && currentPrey.preyMonster == mType->name) {
-			return currentPrey.bonusValue;
-		}
-	}
-	return 0;
-}
-
-bool Player::applyBonusExperience(uint64_t& gainExp, Creature* source)
-{
-	if (!source) {
-		return false;
-	}
-
-	for (uint8_t preySlotId = 0; preySlotId < PREY_SLOTCOUNT; preySlotId++) {
-		PreyData& currentPrey = preyData[preySlotId];
-		if (currentPrey.state == STATE_ACTIVE && currentPrey.bonusType == BONUS_XP_BONUS && currentPrey.preyMonster == source->getName()) {
-			gainExp *= (currentPrey.bonusValue / 100. + 1);
-			return true;
-		}
-	}
-	return false;
-}
-
-bool Player::applyBonusDamageBoost(CombatDamage& damage, Creature* opponent)
-{
-	if (!opponent) {
-		return false;
-	}
-
-	for (uint8_t preySlotId = 0; preySlotId < PREY_SLOTCOUNT; preySlotId++) {
-		PreyData& currentPrey = preyData[preySlotId];
-		if (currentPrey.state == STATE_ACTIVE && currentPrey.bonusType == BONUS_DAMAGE_BOOST && currentPrey.preyMonster == opponent->getName()) {
-			damage.primary.value += (damage.primary.value * currentPrey.bonusValue / 100.);
-			damage.secondary.value += (damage.secondary.value * currentPrey.bonusValue / 100.);
-			return true;
-		}
-	}
-	return false;
-}
-
-bool Player::applyBonusDamageReduction(CombatDamage& damage, Creature* opponent)
-{
-	if (!opponent) {
-		return false;
-	}
-
-	for (uint8_t preySlotId = 0; preySlotId < PREY_SLOTCOUNT; preySlotId++) {
-		PreyData& currentPrey = preyData[preySlotId];
-		if (currentPrey.state == STATE_ACTIVE && currentPrey.bonusType == BONUS_DAMAGE_REDUCTION && currentPrey.preyMonster == opponent->getName()) {
-			damage.primary.value -= (damage.primary.value * currentPrey.bonusValue / 100.);
-			damage.secondary.value -= (damage.secondary.value * currentPrey.bonusValue / 100.);
-			return true;
-		}
-	}
-	return false; 
-}
-
-bool Player::hasActivePreyBonus(BonusType type, Creature* source) 
-{
-	if (!source) {
-		return false;
-	}
-
-	for (uint8_t preySlotId = 0; preySlotId < PREY_SLOTCOUNT; preySlotId++) {
-		PreyData& currentPrey = preyData[preySlotId];
-		if (currentPrey.state == STATE_ACTIVE && currentPrey.bonusType == type && currentPrey.preyMonster == source->getName()) {
-			return true;
-		}
-	}
-	return false;
-}
-
-void Player::setAutolootItem(uint16_t itemId, bool isLogin /* = false */)
-{
-	if (itemId == 0) {
-		autoLootItemIds.clear();
-		return;
-	}
-
-	int count = 0;
-	for (const auto& id : autoLootItemIds) {
-		if (id == itemId) {
-			autoLootItemIds.erase(autoLootItemIds.begin() + count);
-			return;
-		}
-		count++;
-	}
-
-	size_t limit = isVip() ? 20 : 10;
-	if (autoLootItemIds.size() >= limit) {
-		if (!isLogin)
-			sendTextMessage(MESSAGE_STATUS_WARNING, "You have reached the limit of items in the list.");
-		return;
-	}
-
-	autoLootItemIds.emplace_back(itemId);
-}
-
-std::map<uint16_t, Container*> Player::getContainers()
-{
-	uint16_t count = 0;
-	std::map<uint16_t, Container*> contMap;
-	for (int32_t i = CONST_SLOT_FIRST; i <= CONST_SLOT_LAST; i++) {
-		Item* item = inventory[i];
-		if (!item) {
-			continue;
-		}
-
-		Container* container = item->getContainer();
-		if (container) {
-			contMap[++count] = container;
-			for (ContainerIterator it = container->iterator(); it.hasNext(); it.advance()) {
-				if ((*it)->getContainer()) {
-					contMap[++count] = (*it)->getContainer();
-				}
-			}
-		}
-	}
-	return contMap;
-}
-
-bool Player::removeFrags(uint8_t count)
-{
-	if (unjustifiedKills.empty()) {
-		return false;
-	}
-
-	uint8_t passed = 0;
-	std::vector<Kill> v_unjustifiedKills = unjustifiedKills;
-	for (const auto& kill : v_unjustifiedKills) {
-		if (passed >= count) {
-			break;
-		}
-
-		if (kill.time > 0) {
-			unjustifiedKills.erase(unjustifiedKills.begin() + passed);
-			passed++;
-		}
-
-	}
-
-	sendUnjustifiedPoints();
-	return true;
-}
-
-void Player::addAccountStorageValue(const uint32_t key, const int32_t value)
-{
-	if (value != -1) {
-		int32_t oldValue;
-		getAccountStorageValue(key, oldValue);
-		accountStorageMap[key] = value;
-	} else {
-		accountStorageMap.erase(key);
-	}
-}
-
-bool Player::getAccountStorageValue(const uint32_t key, int32_t& value) const
-{
-	auto it = accountStorageMap.find(key);
-	if (it == accountStorageMap.end()) {
-		value = -1;
-		return false;
-	}
-
-	value = it->second;
-	return true;
-}
-
-bool Player::hasPvpActivity(Player* player, bool guildAndParty/* = false*/) const
-{
-	if (!g_game.isExpertPvpEnabled() || !player || player == const_cast<Player*>(this)) {
-		return false;
-	}
-
-	if (hasAttacked(player) || player->hasAttacked(this)) {
-		return true;
-	}
-
-	if (guildAndParty) {
-		if (guild) {
-			for (auto it : guild->getMembersOnline()) {
-				if (it->hasPvpActivity(player)) {
-					return true;
-				}
-			}
-		}
-
-		if (party) {
-			for (auto it : party->getMembers()) {
-				if (it->hasPvpActivity(player)) {
-					return true;
-				}
-			}
-		}
-	}
-
-	return false;
-}
-
-bool Player::isInPvpSituation()
-{
-	if (!isPvpSituation) {
-		return false;
-	}
-
-	if (pzLocked || attackedSet.size() > 0) {
-		return true;
-	}
-
-	for (auto it : g_game.getPlayers()) {
-		Player* itPlayer = it.second;
-		if (!itPlayer || itPlayer->isRemoved()) {
-			continue;
-		}
-
-		if (itPlayer->hasAttacked(this)) {
-			return true;
-		}
-	}
-	
-	return false;
-}
-
-void Player::sendPvpSquare(Creature* target, SquareColor_t squareColor)
-{
-	sendCreatureSquare(target, squareColor, 2);
-
-	if (squareColor == SQ_COLOR_YELLOW) {
-		sendCreatureSquare(this, squareColor, 2); // Only add to self if it's yellow.
-	}
-}
-

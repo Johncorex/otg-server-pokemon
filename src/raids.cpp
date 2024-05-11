@@ -1,6 +1,6 @@
 /**
  * The Forgotten Server - a free and open-source MMORPG server emulator
- * Copyright (C) 2019 Mark Samman <mark.samman@gmail.com>
+ * Copyright (C) 2016  Mark Samman <mark.samman@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -27,11 +27,9 @@
 #include "configmanager.h"
 #include "scheduler.h"
 #include "monster.h"
-#include "events.h"
 
 extern Game g_game;
 extern ConfigManager g_config;
-extern Events* g_events;
 
 Raids::Raids()
 {
@@ -230,9 +228,7 @@ bool Raid::loadFromXml(const std::string& filename)
 	}
 
 	//sort by delay time
-	std::sort(raidEvents.begin(), raidEvents.end(), [](const RaidEvent* lhs, const RaidEvent* rhs) {
-		return lhs->getDelay() < rhs->getDelay();
-	});
+	std::sort(raidEvents.begin(), raidEvents.end(), RaidEvent::compareEvents);
 
 	loaded = true;
 	return true;
@@ -386,7 +382,7 @@ bool SingleSpawnEvent::configureRaidEvent(const pugi::xml_node& eventNode)
 
 bool SingleSpawnEvent::executeEvent()
 {
-	Monster* monster = Monster::createMonster(monsterName);
+	Monster* monster = Monster::createMonster(monsterName, 0, 0); //pota
 	if (!monster) {
 		std::cout << "[Error] Raids: Cant create monster " << monsterName << std::endl;
 		return false;
@@ -397,14 +393,6 @@ bool SingleSpawnEvent::executeEvent()
 		std::cout << "[Error] Raids: Cant place monster " << monsterName << std::endl;
 		return false;
 	}
-
-	if (!g_events->eventMonsterOnSpawn(monster, position, false, true)) {
-		g_game.removeCreature(monster);
-		return false;
-	}
-
-	monster->isRaid(true);
-
 	return true;
 }
 
@@ -535,7 +523,7 @@ bool AreaSpawnEvent::executeEvent()
 	for (const MonsterSpawn& spawn : spawnList) {
 		uint32_t amount = uniform_random(spawn.minAmount, spawn.maxAmount);
 		for (uint32_t i = 0; i < amount; ++i) {
-			Monster* monster = Monster::createMonster(spawn.name);
+			Monster* monster = Monster::createMonster(spawn.name, 0, 0); //pota
 			if (!monster) {
 				std::cout << "[Error - AreaSpawnEvent::executeEvent] Can't create monster " << spawn.name << std::endl;
 				return false;
@@ -545,11 +533,8 @@ bool AreaSpawnEvent::executeEvent()
 			for (int32_t tries = 0; tries < MAXIMUM_TRIES_PER_MONSTER; tries++) {
 				Tile* tile = g_game.map.getTile(uniform_random(fromPos.x, toPos.x), uniform_random(fromPos.y, toPos.y), uniform_random(fromPos.z, toPos.z));
 				if (tile && !tile->isMoveableBlocking() && !tile->hasFlag(TILESTATE_PROTECTIONZONE) && tile->getTopCreature() == nullptr && g_game.placeCreature(monster, tile->getPosition(), false, true)) {
-					if (g_events->eventMonsterOnSpawn(monster, tile->getPosition(), false, true)) {
-						monster->isRaid(true);
-						success = true;
-						break;
-					}
+					success = true;
+					break;
 				}
 			}
 

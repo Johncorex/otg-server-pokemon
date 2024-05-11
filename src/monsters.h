@@ -1,6 +1,6 @@
 /**
  * The Forgotten Server - a free and open-source MMORPG server emulator
- * Copyright (C) 2019 Mark Samman <mark.samman@gmail.com>
+ * Copyright (C) 2016  Mark Samman <mark.samman@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -35,45 +35,16 @@ struct LootBlock {
 	int32_t subType;
 	int32_t actionId;
 	std::string text;
-	std::string name;
-	std::string article;
-	int32_t attack;
-	int32_t defense;
-	int32_t extraDefense;
-	int32_t armor;
-	int32_t shootRange;
-	int32_t hitChance;
-	bool unique;
-	bool raid;
 
 	std::vector<LootBlock> childLoot;
 	LootBlock() {
 		id = 0;
-		countmax = 1;
+		countmax = 0;
 		chance = 0;
 
 		subType = -1;
 		actionId = -1;
-		attack = -1;
-		defense = -1;
-		extraDefense = -1;
-		armor = -1;
-		shootRange = -1;
-		hitChance = -1;
-		unique = false;
-		raid = false;
 	}
-};
-
-class Loot {
-	public:
-		Loot() = default;
-
-		// non-copyable
-		Loot(const Loot&) = delete;
-		Loot& operator=(const Loot&) = delete;
-
-		LootBlock lootBlock;
 };
 
 struct summonBlock_t {
@@ -83,6 +54,16 @@ struct summonBlock_t {
 	uint32_t max;
 	bool force = false;
 };
+
+struct evolutionBlock_t { //pota
+	std::string name;
+	std::string itemName;
+	uint32_t level;
+	uint32_t chance;
+	uint32_t count;
+};
+
+
 
 class BaseSpell;
 struct spellBlock_t {
@@ -97,6 +78,8 @@ struct spellBlock_t {
 		range(other.range),
 		minCombatValue(other.minCombatValue),
 		maxCombatValue(other.maxCombatValue),
+		name(other.name), //pota
+		isTarget(other.isTarget), //pota
 		combatSpell(other.combatSpell),
 		isMelee(other.isMelee) {
 		other.spell = nullptr;
@@ -108,6 +91,8 @@ struct spellBlock_t {
 	uint32_t range = 0;
 	int32_t minCombatValue = 0;
 	int32_t maxCombatValue = 0;
+	std::string name = "none"; //pota
+	bool isTarget = false; //pota
 	bool combatSpell = false;
 	bool isMelee = false;
 };
@@ -132,16 +117,23 @@ class MonsterType
 		std::vector<spellBlock_t> defenseSpells;
 		std::vector<summonBlock_t> summons;
 
+
+		std::vector<spellBlock_t> moves; //pota
+
+		std::vector<evolutionBlock_t> evolutions; //pota
+
+
 		Skulls_t skull = SKULL_NONE;
 		Outfit_t outfit = {};
 		RaceType_t race = RACE_BLOOD;
+
+		RaceType_t race2 = RACE_NONE; //pota
 
 		LightInfo light = {};
 		uint16_t lookcorpse = 0;
 
 		uint64_t experience = 0;
-
-		uint16_t raceid = 0;
+		uint64_t monsterExperience = 0; //pota
 
 		uint32_t manaCost = 0;
 		uint32_t yellChance = 0;
@@ -152,7 +144,6 @@ class MonsterType
 		uint32_t conditionImmunities = 0;
 		uint32_t damageImmunities = 0;
 		uint32_t baseSpeed = 200;
-		uint32_t respawnType = RESPAWN_IN_ALL;
 
 		int32_t creatureAppearEvent = -1;
 		int32_t creatureDisappearEvent = -1;
@@ -163,9 +154,11 @@ class MonsterType
 		int32_t runAwayHealth = 0;
 		int32_t health = 100;
 		int32_t healthMax = 100;
-		int32_t changeTargetChance = 0;
+		int32_t changeTargetChance =0;
 		int32_t defense = 0;
 		int32_t armor = 0;
+		uint16_t minLevel = 0; //pota
+		uint16_t maxLevel = 0; //pota
 
 		bool canPushItems = false;
 		bool canPushCreatures = false;
@@ -175,17 +168,22 @@ class MonsterType
 		bool isConvinceable = false;
 		bool isAttackable = true;
 		bool isHostile = true;
-		bool hiddenHealth = false;
-		bool isBlockable = false;
-		bool isPet = false;
-		bool isPassive = false;
-		bool isRewardBoss = false;
-		bool isPreyable = true;
-		bool canWalkOnEnergy = true;
-		bool canWalkOnFire = true;
-		bool canWalkOnPoison = true;
+		bool isPassive = false; //pota
 
-		MonstersEvent_t eventType = MONSTERS_EVENT_NONE;
+		int32_t isFlyable = 0;
+		int32_t isRideable = 0;
+		int32_t isSurfable = 0;
+		bool canTeleport = false;
+		int32_t catchChance = 0;
+		int32_t moveMagicAttackBase = 0;
+		int32_t moveMagicDefenseBase = 0;
+
+		int32_t hasShiny = 0;
+		int32_t hasMega = 0;
+		int32_t dexEntry = 0;
+		int32_t portraitId = 0;
+
+		bool hiddenHealth = false;
 	};
 
 	public:
@@ -195,59 +193,18 @@ class MonsterType
 		MonsterType(const MonsterType&) = delete;
 		MonsterType& operator=(const MonsterType&) = delete;
 
-		bool loadCallback(LuaScriptInterface* scriptInterface);
-
 		std::string name;
 		std::string nameDescription;
 
 		MonsterInfo info;
 
-		bool canSpawn(const Position& pos);
+//		void createLoot(Container* corpse);
+//		bool createLootContainer(Container* parent, const LootBlock& lootblock);
+//		std::vector<Item*> createLootItem(const LootBlock& lootBlock);
 
-		void loadLoot(MonsterType* monsterType, LootBlock lootblock);
-};
-
-class MonsterSpell
-{
-	public:
-		MonsterSpell() = default;
-
-		MonsterSpell(const MonsterSpell&) = delete;
-		MonsterSpell& operator=(const MonsterSpell&) = delete;
-
-		std::string name = "";
-		std::string scriptName = "";
-
-		uint8_t chance = 100;
-		uint8_t range = 0;
-
-		uint16_t interval = 2000;
-
-		int32_t minCombatValue = 0;
-		int32_t maxCombatValue = 0;
-		int32_t attack = 0;
-		int32_t skill = 0;
-		int32_t length = 0;
-		int32_t spread = 0;
-		int32_t radius = 0;
-		int32_t conditionMinDamage = 0;
-		int32_t conditionMaxDamage = 0;
-		int32_t conditionStartDamage = 0;
-		int32_t tickInterval = 0;
-		int32_t speedChange = 0;
-		int32_t duration = 0;
-
-		bool isScripted = false;
-		bool needTarget = false;
-		bool needDirection = false;
-		bool combatSpell = false;
-		bool isMelee = false;
-
-		Outfit_t outfit = {};
-		ShootType_t shoot = CONST_ANI_NONE;
-		MagicEffectClasses effect = CONST_ME_NONE;
-		ConditionType_t conditionType = CONDITION_NONE;
-		CombatType_t combatType = COMBAT_UNDEFINEDDAMAGE;
+		void createLoot(Container* corpse, double bonus = 1.0); //pota
+		bool createLootContainer(Container* parent, const LootBlock& lootblock, double bonus = 1.0); //pota
+		std::vector<Item*> createLootItem(const LootBlock& lootBlock, double bonus = 1.0); //pota
 };
 
 class Monsters
@@ -264,28 +221,27 @@ class Monsters
 		}
 		bool reload();
 
-		MonsterType* getMonsterType(const std::string& name);
-		MonsterType* getMonsterTypeByRace(uint16_t raceid);
-		void addMonsterType(const std::string& name, MonsterType* mType);
-		bool deserializeSpell(MonsterSpell* spell, spellBlock_t& sb, const std::string& description = "");
+		std::vector<std::string> getMonstersName() { //pota
+			return allMonsters;
+		}
 
-		std::vector<std::string> getPreyMonsters();
-		
-		std::unique_ptr<LuaScriptInterface> scriptInterface;
-		std::map<std::string, MonsterType> monsters;
-		std::map<uint16_t, std::string> raceidMonsters;
+		MonsterType* getMonsterType(const std::string& name);
+
+		static uint32_t getLootRandom();
 
 	private:
 		ConditionDamage* getDamageCondition(ConditionType_t conditionType,
-											int32_t maxDamage, int32_t minDamage, int32_t startDamage, uint32_t tickInterval);
+		                                    int32_t maxDamage, int32_t minDamage, int32_t startDamage, uint32_t tickInterval);
 		bool deserializeSpell(const pugi::xml_node& node, spellBlock_t& sb, const std::string& description = "");
 
-		MonsterType* loadMonster(const std::string& file, const std::string& monsterName, bool reloading = false, uint16_t raceid = 0);
+		bool loadMonster(const std::string& file, const std::string& monsterName, std::list<std::pair<MonsterType*, std::string>>& monsterScriptList, bool reloading = false);
 
 		void loadLootContainer(const pugi::xml_node& node, LootBlock&);
 		bool loadLootItem(const pugi::xml_node& node, LootBlock&);
 
-		std::map<std::string, std::string> unloadedMonsters;
+		std::map<std::string, MonsterType> monsters;
+		std::vector<std::string> allMonsters; //pota
+		std::unique_ptr<LuaScriptInterface> scriptInterface;
 
 		bool loaded = false;
 };

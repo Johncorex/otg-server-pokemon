@@ -1,6 +1,6 @@
 /**
  * The Forgotten Server - a free and open-source MMORPG server emulator
- * Copyright (C) 2019 Mark Samman <mark.samman@gmail.com>
+ * Copyright (C) 2016  Mark Samman <mark.samman@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -48,7 +48,9 @@ class Spawn
 		bool addMonster(const std::string& name, const Position& pos, Direction dir, uint32_t interval);
 		void removeMonster(Monster* monster);
 
-		uint32_t getInterval() const;
+		uint32_t getInterval() const {
+			return interval;
+		}
 		void startup();
 
 		void startSpawnCheck();
@@ -59,8 +61,8 @@ class Spawn
 
 	private:
 		//map of the spawned creatures
-		using SpawnedMap = std::multimap<uint32_t, Monster*>;
-		using spawned_pair = SpawnedMap::value_type;
+		typedef std::multimap<uint32_t, Monster*> SpawnedMap;
+		typedef SpawnedMap::value_type spawned_pair;
 		SpawnedMap spawnedMap;
 
 		//map of creatures in the spawn
@@ -75,7 +77,6 @@ class Spawn
 		static bool findPlayer(const Position& pos);
 		bool spawnMonster(uint32_t spawnId, MonsterType* mType, const Position& pos, Direction dir, bool startup = false);
 		void checkSpawn();
-		void scheduleSpawn(uint32_t spawnId, spawnBlock_t& sb, uint16_t interval);
 };
 
 class Spawns
@@ -90,21 +91,13 @@ class Spawns
 		bool isStarted() const {
 			return started;
 		}
-		std::forward_list<Spawn>& getSpawnList() {
-			return spawnList;
-		}
 
-		bool loadCustomSpawnXml(const std::string& _filename, const Position& relativePosition = Position());
 	private:
 		std::forward_list<Npc*> npcList;
 		std::forward_list<Spawn> spawnList;
 		std::string filename;
 		bool loaded = false;
 		bool started = false;
-
-		std::forward_list<Spawn> customSpawnList;
 };
-
-static constexpr int32_t NONBLOCKABLE_SPAWN_INTERVAL = 1400;
 
 #endif

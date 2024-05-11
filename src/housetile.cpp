@@ -1,6 +1,6 @@
 /**
  * The Forgotten Server - a free and open-source MMORPG server emulator
- * Copyright (C) 2019  Mark Samman <mark.samman@gmail.com>
+ * Copyright (C) 2016  Mark Samman <mark.samman@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -41,6 +41,19 @@ void HouseTile::addThing(int32_t index, Thing* thing)
 	}
 }
 
+void HouseTile::internalAddThing(uint32_t index, Thing* thing)
+{
+	Tile::internalAddThing(index, thing);
+
+	if (!thing->getParent()) {
+		return;
+	}
+
+	if (Item* item = thing->getItem()) {
+		updateHouse(item);
+	}
+}
+
 void HouseTile::updateHouse(Item* item)
 {
 	if (item->getParent() != this) {
@@ -67,15 +80,7 @@ ReturnValue HouseTile::queryAdd(int32_t index, const Thing& thing, uint32_t coun
 			if (!house->isInvited(player)) {
 				return RETURNVALUE_PLAYERISNOTINVITED;
 			}
-		}else if(const Monster* monster = creature->getMonster()){			
-			if(monster->getMaster() != nullptr && monster->isPet()){
-				if (const Player* master = monster->getMaster()->getPlayer()){
-					if (!house->isInvited(master)){
-						return RETURNVALUE_PLAYERISNOTINVITED;
-					}
-				}
-			}
-		}else{
+		} else {
 			return RETURNVALUE_NOTPOSSIBLE;
 		}
 	} else if (thing.getItem() && actor) {
